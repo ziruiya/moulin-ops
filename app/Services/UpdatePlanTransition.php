@@ -45,11 +45,13 @@ class UpdatePlanTransition
             }
             $plan->save();
             app(AuditLogger::class)->log($plan, 'status_transition', ['status' => $from], ['status' => $to, 'blocked_from_status' => $plan->blocked_from_status]);
-            if (in_array($to, ['EXECUTING', 'VERIFYING', 'ROLLING_BACK', 'ROLLBACK_REQUIRED', 'ROLLBACK_FAILED', 'COMPLETED'], true)) {
-                $this->recordWork($plan, $to, $data);
-            }
             if ($to === 'ROLLBACK_FAILED') {
                 $this->incident($plan, $data);
+            } elseif ($to === 'ROLLBACK_REQUIRED' && ! empty($data['incident'])) {
+                $this->incident($plan, $data);
+            }
+            if (in_array($to, ['EXECUTING', 'VERIFYING', 'ROLLING_BACK', 'ROLLBACK_REQUIRED', 'ROLLBACK_FAILED', 'ROLLED_BACK', 'COMPLETED'], true)) {
+                $this->recordWork($plan, $to, $data);
             }
 
             return $plan;
@@ -94,6 +96,9 @@ class UpdatePlanTransition
         if ($to === 'ROLLED_BACK' && ! $p->checklistItems()->where('phase', '5 Post-change Verification')->where('status', 'Passed')->exists()) {
             throw ValidationException::withMessages(['checklist' => 'Rollback verification evidence is required.']);
         }
+        if ($to === 'ROLLED_BACK' && (empty($d['rollback_reason']) || empty($d['restore_verification_result']))) {
+            throw ValidationException::withMessages(['rollback' => 'Rollback reason and restore verification result are required.']);
+        }
         if ($to === 'EMERGENCY_REVIEW' && empty($d['completion_result'])) {
             throw ValidationException::withMessages(['completion_result' => 'After-action review is required.']);
         }
@@ -108,7 +113,9 @@ class UpdatePlanTransition
         if (! $asset || ! Auth::id()) {
             return;
         }
-        WorkRecord::create(['record_code' => 'WR-'.strtoupper(bin2hex(random_bytes(6))), 'record_type' => $status === 'VERIFYING' ? 'Verification' : 'Update', 'asset_id' => $asset->id, 'user_id' => Auth::id(), 'update_plan_id' => $p->id, 'summary' => "Update plan {$status}", 'action_summary' => $data['action_summary'] ?? "Recorded {$status} milestone; commands executed externally by operator.", 'details' => $data['details'] ?? null, 'environment' => $asset->environment ?? 'Unknown', 'result' => $status === 'ROLLBACK_FAILED' ? 'Failed' : 'Pending', 'started_at' => now(), 'performed_at' => now()]);
+        $incidentId = DB::table('incident_update_plans')->where('update_plan_id', $p->id)->orderByDesc('id')->value('incident_id');
+        $details = $data['details'] ?? ($status === 'ROLLED_BACK' ? json_encode(['rollback_reason' => $data['rollback_reason'] ?? null, 'restore_verification_result' => $data['restore_verification_result'] ?? null], JSON_THROW_ON_ERROR) : null);
+        WorkRecord::create(['record_code' => 'WR-'.strtoupper(bin2hex(random_bytes(6))), 'record_type' => $status === 'VERIFYING' ? 'Verification' : 'Update', 'asset_id' => $asset->id, 'user_id' => Auth::id(), 'update_plan_id' => $p->id, 'incident_id' => $incidentId, 'summary' => "Update plan {$status}", 'action_summary' => $data['action_summary'] ?? "Recorded {$status} milestone; commands executed externally by operator.", 'details' => $details, 'environment' => $asset->environment ?? 'Unknown', 'result' => $status === 'ROLLBACK_FAILED' ? 'Failed' : 'Pending', 'started_at' => now(), 'performed_at' => now()]);
     }
 
     private function incident(UpdatePlan $p, array $data): void

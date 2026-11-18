@@ -17,9 +17,11 @@ class UpdatePlanController extends Controller
 {
     public function index(Request $request)
     {
-        $plans = UpdatePlan::with('assets')->when($request->filled('status'), fn ($q) => $q->where('status', $request->string('status')))->orderByRaw('planned_start_at IS NULL, planned_start_at')->get();
+        $plans = UpdatePlan::with('assets')->when($request->filled('status'), fn ($q) => $q->where('status', $request->string('status')))->orderByRaw('planned_start_at IS NULL, planned_start_at')->orderBy('plan_code')->get();
+        $statusGroups = $plans->groupBy('status');
+        $timeGroups = $plans->groupBy(fn (UpdatePlan $plan) => $plan->planned_start_at?->toDateString() ?? '未設定');
 
-        return view('update-plans.index', compact('plans'));
+        return view('update-plans.index', compact('plans', 'statusGroups', 'timeGroups'));
     }
 
     public function create()

@@ -33,6 +33,11 @@ class UpdatePlan extends Model
         return $this->hasMany(ChangeApproval::class, 'update_plan_id');
     }
 
+    public function workRecords(): HasMany
+    {
+        return $this->hasMany(WorkRecord::class, 'update_plan_id');
+    }
+
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
