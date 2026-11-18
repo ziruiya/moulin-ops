@@ -6,6 +6,7 @@
 <body>
 <nav>
 <a href="{{ route('assets.index') }}">IT??</a>
+<a href="{{ route('vulnerabilities.index') }}">脆弱性管理</a>
 @if(auth()->user()->roles()->where('name', 'Admin')->exists())<a href="{{ route('settings.users.index') }}">??????</a>@endif
 <form method="post" action="{{ route('logout') }}">@csrf<button>?????</button></form>
 </nav>
