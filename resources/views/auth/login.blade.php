@@ -1,1 +1,23 @@
-<!doctype html><html lang="ja"><meta charset="utf-8"><title>еэе░едеє</title><body><h1>MoulinOps еэе░едеє</h1><form method="post" action="{{route('login.store')}}">@csrf<input type="email" name="email" required placeholder="есй`еыеве╔еье╣"><input type="password" name="password" required placeholder="е╤е╣еяй`е╔"><button>еэе░едеє</button></form>@if($errors->any())<p>╒J╘^╟щИєдЄ┤_╒Jд╖д╞дпд└д╡дд</p>@endif</body></html>
+<!doctype html>
+<html lang="ja">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>MoulinOps уГнуВ░уВдуГ│</title>
+</head>
+<body>
+<main>
+    <h1>MoulinOps уГнуВ░уВдуГ│</h1>
+    <p>DEMO DATAя╜ЬцГ│хоЪчТ░хвГя╜ЬхоЯхЬиф╝БценуБоцзЛцИРуБзуБпуБВуВКуБ╛уБЫуВУ</p>
+    <form method="post" action="{{ route('login.store') }}">
+        @csrf
+        <p><label>уГжуГ╝уВ╢уГ╝хРНуБ╛уБЯуБпуГбуГ╝уГлуВвуГЙуГмуВ╣ <input name="login" value="{{ old('login') }}" autocomplete="username" required></label></p>
+        <p><label>уГСуВ╣уГпуГ╝уГЙ <input type="password" name="password" autocomplete="current-password" required></label></p>
+        <button>уГнуВ░уВдуГ│</button>
+    </form>
+    @if($errors->any())
+        <p role="alert">уГжуГ╝уВ╢уГ╝хРНуБ╛уБЯуБпуГСуВ╣уГпуГ╝уГЙуВТчв║шкНуБЧуБжуБПуБауБХуБДуАВ</p>
+    @endif
+</main>
+</body>
+</html>

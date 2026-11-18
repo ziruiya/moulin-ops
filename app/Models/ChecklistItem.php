@@ -7,6 +7,14 @@ use Illuminate\Database\Eloquent\Relations\BelongsTo;
 
 class ChecklistItem extends Model
 {
+    public const PHASES = [
+        1 => '1 Impact Assessment',
+        2 => '2 Pre-change Validation',
+        3 => '3 Backup and Rollback Preparation',
+        4 => '4 Implementation',
+        5 => '5 Post-change Verification',
+    ];
+
     protected $table = 'update_checklist_items';
 
     protected $guarded = [];

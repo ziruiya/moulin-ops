@@ -16,6 +16,11 @@ class ChangeApproval extends Model
         return $this->belongsTo(UpdatePlan::class, 'update_plan_id');
     }
 
+    public function approver(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'approver_id');
+    }
+
     protected static function booted(): void
     {
         static::updating(fn () => throw new \LogicException('Approvals are append-only; resubmission creates a new decision.'));

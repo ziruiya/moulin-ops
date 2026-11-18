@@ -9,6 +9,27 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class UpdatePlan extends Model
 {
+    public const STATUS_LABELS = [
+        'DRAFT' => '下書き',
+        'ASSESSMENT' => '影響調査中',
+        'TESTING' => '事前検証中',
+        'PENDING_APPROVAL' => '承認待ち',
+        'APPROVED' => '承認済み',
+        'SCHEDULED' => '実施予定',
+        'EXECUTING' => '実施中',
+        'VERIFYING' => '動作確認中',
+        'COMPLETED' => '完了',
+        'REJECTED' => '差し戻し',
+        'BLOCKED' => '保留',
+        'CANCELLED' => '中止',
+        'FAILED' => '実施失敗',
+        'ROLLBACK_REQUIRED' => 'ロールバックが必要',
+        'ROLLING_BACK' => 'ロールバック中',
+        'ROLLED_BACK' => 'ロールバック済み',
+        'ROLLBACK_FAILED' => 'ロールバック失敗',
+        'EMERGENCY_REVIEW' => '事後レビュー待ち',
+    ];
+
     protected $guarded = [];
 
     protected $casts = ['backup_verified' => 'boolean', 'restore_test_passed' => 'boolean', 'planned_start_at' => 'datetime', 'planned_end_at' => 'datetime', 'actual_start_at' => 'datetime', 'actual_end_at' => 'datetime'];
@@ -46,5 +67,20 @@ class UpdatePlan extends Model
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
+    }
+
+    public function operator(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'operator_id');
+    }
+
+    public function reviewer(): BelongsTo
+    {
+        return $this->belongsTo(User::class, 'reviewer_id');
+    }
+
+    public function sourceAssessment(): BelongsTo
+    {
+        return $this->belongsTo(VulnerabilityComponentAssessment::class, 'source_assessment_id');
     }
 }

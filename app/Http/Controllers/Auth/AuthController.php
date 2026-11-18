@@ -10,24 +10,31 @@ class AuthController extends Controller
 {
     public function create()
     {
+        if (Auth::check()) {
+            return redirect()->route('dashboard');
+        }
+
         return view('auth.login');
     }
 
-    public function store(Request $r)
+    public function store(Request $request)
     {
-        $credentials = $r->validate(['email' => 'required|email', 'password' => 'required|string']);
-        if (! Auth::attempt($credentials, $r->boolean('remember'))) {
-            return back()->withErrors(['email' => 'ÕJÔ^Çéˆó¤ò´_ÕJ¤·¤Æ¤¯¤À¤µ¤¤'])->onlyInput('email');
-        } $r->session()->regenerate();
+        $request->mergeIfMissing(['login' => $request->input('username', $request->input('email'))]);
+        $data = $request->validate(['login' => 'required|string|max:255', 'password' => 'required|string']);
+        $field = str_contains($data['login'], '@') ? 'email' : 'username';
+        if (! Auth::attempt([$field => $data['login'], 'password' => $data['password']], $request->boolean('remember'))) {
+            return back()->withErrors(['login' => 'ãƒ¦ãƒ¼ã‚¶ãƒ¼åã¾ãŸã¯ãƒ‘ã‚¹ãƒ¯ãƒ¼ãƒ‰ã‚’ç¢ºèªã—ã¦ãã ã•ã„ã€‚'])->onlyInput('login');
+        }
+        $request->session()->regenerate();
 
-        return redirect()->intended(route('assets.index'));
+        return redirect()->intended(route('dashboard'));
     }
 
-    public function destroy(Request $r)
+    public function destroy(Request $request)
     {
         Auth::logout();
-        $r->session()->invalidate();
-        $r->session()->regenerateToken();
+        $request->session()->invalidate();
+        $request->session()->regenerateToken();
 
         return redirect()->route('login');
     }
