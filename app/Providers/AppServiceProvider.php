@@ -3,6 +3,7 @@
 namespace App\Providers;
 
 use App\Models\Asset;
+use App\Models\User;
 use App\Policies\AssetPolicy;
 use Illuminate\Support\Facades\Gate;
 use Illuminate\Support\ServiceProvider;
@@ -14,5 +15,6 @@ class AppServiceProvider extends ServiceProvider
     public function boot(): void
     {
         Gate::policy(Asset::class, AssetPolicy::class);
+        Gate::define('manage-users', fn (User $user): bool => $user->roles()->where('name', 'Admin')->exists());
     }
 }

@@ -3,6 +3,7 @@
 namespace App\Http\Controllers;
 
 use App\Models\Asset;
+use App\Models\AssetComponent;
 use App\Models\AssetRelationship;
 use App\Services\AuditLogger;
 use Illuminate\Http\Request;
@@ -23,7 +24,7 @@ class AssetController extends Controller
             $q->where(fn ($x) => $x->where('asset_code', 'like', '%'.$r->q.'%')->orWhere('name', 'like', '%'.$r->q.'%'));
         }
 
-return view('assets.index', ['assets' => $q->paginate(20)]);
+        return view('assets.index', ['assets' => $q->paginate(20)]);
     }
 
     public function create()
@@ -40,15 +41,15 @@ return view('assets.index', ['assets' => $q->paginate(20)]);
         $a = Asset::create($d);
         $audit->log($a, 'created', [], $d);
 
-        return redirect()->route('assets.show', $a)->with('status', 'µÇåh¤·¤Ş¤·¤¿');
+        return redirect()->route('assets.show', $a)->with('status', 'ç™»éŒ²ã—ã¾ã—ãŸ');
     }
 
     public function show(Asset $asset)
     {
         Gate::authorize('view', $asset);
-        $asset->load('components.currentLifecycle', 'relationships');
+        $asset->load('components.currentLifecycle', 'components.lifecycleRecords', 'relationships.targetAsset');
 
-        return view('assets.show', compact('asset'));
+        return view('assets.show', ['asset' => $asset, 'targetAssets' => Asset::whereKeyNot($asset->id)->orderBy('asset_code')->get()]);
     }
 
     public function edit(Asset $asset)
@@ -72,11 +73,23 @@ return view('assets.index', ['assets' => $q->paginate(20)]);
     public function component(Request $r, Asset $asset, AuditLogger $audit)
     {
         Gate::authorize('update', $asset);
-        $d = $r->validate(['component_type' => 'required|string', 'product_name' => 'required|string', 'version' => 'nullable|string', 'support_phase' => ['required', Rule::in(['Active', 'Security Only', 'Extended', 'EOL', 'Unknown'])], 'environment' => 'nullable|string']);
+        $d = $r->validate(['component_type' => 'required|string', 'vendor_name' => 'nullable|string', 'product_name' => 'required|string', 'version' => 'nullable|string', 'support_phase' => ['required', Rule::in(['Active', 'Security Only', 'Extended', 'EOL', 'Unknown'])], 'environment' => 'nullable|string']);
         $c = $asset->components()->create($d);
         $audit->log($c, 'created', [], $d);
 
         return back();
+    }
+
+    public function updateComponent(Request $r, Asset $asset, AssetComponent $component, AuditLogger $audit)
+    {
+        Gate::authorize('update', $asset);
+        abort_unless($component->asset_id === $asset->id, 404);
+        $d = $r->validate(['component_type' => 'required|string|max:255', 'vendor_name' => 'nullable|string|max:255', 'product_name' => 'required|string|max:255', 'version' => 'nullable|string|max:255', 'support_phase' => ['required', Rule::in(['Active', 'Security Only', 'Extended', 'EOL', 'Unknown'])]]);
+        $old = $component->only(array_keys($d));
+        $component->update($d);
+        $audit->log($component, 'updated', $old, $d);
+
+        return back()->with('status', 'Component updated');
     }
 
     public function lifecycle(Request $r, Asset $asset)
@@ -100,8 +113,8 @@ return view('assets.index', ['assets' => $q->paginate(20)]);
 
     public function destroyRelationship(Asset $asset, AssetRelationship $relationship)
     {
-        Gate::authorize('update',$asset);
-        abort_unless($relationship->source_asset_id === $asset->id,404);
+        Gate::authorize('update', $asset);
+        abort_unless($relationship->source_asset_id === $asset->id, 404);
         $relationship->delete();
 
         return back();

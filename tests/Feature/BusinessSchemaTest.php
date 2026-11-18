@@ -32,9 +32,9 @@ class BusinessSchemaTest extends TestCase
 
     public function test_lifecycle_verification_is_unique_per_component(): void
     {
-        DB::table('assets')->insert(['asset_code' => 'A-1', 'name' => 'A', 'asset_type' => 'server', 'created_at' => now(), 'updated_at' => now()]);
-        DB::table('asset_components')->insert(['asset_id' => 1, 'component_type' => 'runtime', 'product_name' => 'PHP', 'created_at' => now(), 'updated_at' => now()]);
-        $row = ['component_id' => 1, 'product_name' => 'PHP', 'support_phase' => 'Unknown', 'source_name' => 'Manual', 'source_url' => 'https://example.test', 'verified_at' => '2026-01-01 00:00:00', 'date_precision' => 'DAY', 'data_source_type' => 'OFFICIAL_MANUAL_SEED', 'created_at' => now(), 'updated_at' => now()];
+        $assetId = DB::table('assets')->insertGetId(['asset_code' => 'A-1', 'name' => 'A', 'asset_type' => 'server', 'created_at' => now(), 'updated_at' => now()]);
+        $componentId = DB::table('asset_components')->insertGetId(['asset_id' => $assetId, 'component_type' => 'runtime', 'product_name' => 'PHP', 'created_at' => now(), 'updated_at' => now()]);
+        $row = ['component_id' => $componentId, 'product_name' => 'PHP', 'support_phase' => 'Unknown', 'source_name' => 'Manual', 'source_url' => 'https://example.test', 'verified_at' => '2026-01-01 00:00:00', 'date_precision' => 'DAY', 'data_source_type' => 'OFFICIAL_MANUAL_SEED', 'created_at' => now(), 'updated_at' => now()];
         DB::table('component_lifecycle_records')->insert($row);
         $this->expectException(QueryException::class);
         DB::table('component_lifecycle_records')->insert($row);

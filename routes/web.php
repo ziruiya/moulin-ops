@@ -2,6 +2,7 @@
 
 use App\Http\Controllers\AssetController;
 use App\Http\Controllers\Auth\AuthController;
+use App\Http\Controllers\UserManagementController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/login', [AuthController::class, 'create'])->name('login');
@@ -14,4 +15,9 @@ Route::middleware('auth')->group(function () {
     Route::post('/assets/{asset}/lifecycle', [AssetController::class, 'lifecycle'])->name('assets.lifecycle.store');
     Route::post('/assets/{asset}/relationships', [AssetController::class, 'relationship'])->name('assets.relationships.store');
     Route::delete('/assets/{asset}/relationships/{relationship}', [AssetController::class, 'destroyRelationship'])->name('assets.relationships.destroy');
+    Route::put('/assets/{asset}/components/{component}', [AssetController::class, 'updateComponent'])->name('assets.components.update');
+    Route::middleware('can:manage-users')->prefix('settings/users')->name('settings.users.')->group(function () {
+        Route::get('/', [UserManagementController::class, 'index'])->name('index');
+        Route::put('/{user}/roles', [UserManagementController::class, 'updateRoles'])->name('roles.update');
+    });
 });
