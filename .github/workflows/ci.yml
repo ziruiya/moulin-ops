@@ -11,10 +11,10 @@ jobs:
       db:
         image: mariadb:11
         env:
-          MARIADB_ROOT_PASSWORD: root
+          MARIADB_ROOT_PASSWORD: ${{ secrets.DB_ROOT_PASSWORD }}
           MARIADB_DATABASE: moulinops
           MARIADB_USER: moulinops
-          MARIADB_PASSWORD: local-dev-only
+          MARIADB_PASSWORD: ${{ secrets.DB_PASSWORD }}
         ports: [3306:3306]
         options: >-
           --health-cmd="healthcheck.sh --connect --innodb_initialized"
@@ -33,7 +33,19 @@ jobs:
       - run: composer install --no-interaction --prefer-dist
       - run: cp .env.example .env && php artisan key:generate
       - run: php artisan migrate:fresh --force
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_DATABASE: moulinops
+          DB_USERNAME: moulinops
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
       - run: php artisan test
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_DATABASE: moulinops
+          DB_USERNAME: moulinops
+          DB_PASSWORD: ${{ secrets.DB_PASSWORD }}
       - run: vendor/bin/phpstan analyse --memory-limit=1G
       - run: vendor/bin/pint --test
       - run: composer audit
