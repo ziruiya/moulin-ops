@@ -1,0 +1,7 @@
+.git
+.codex-spec
+.scaffold
+.env
+vendor
+node_modules
+storage/logs/*
