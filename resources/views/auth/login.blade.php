@@ -4,11 +4,45 @@
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
     <title>MoulinOps ログイン</title>
+    <style>
+        body {
+            font: 16px system-ui;
+            max-width: 1100px;
+            margin: 2rem auto;
+            padding: 0 1rem;
+            color: #182334;
+        }
+
+        .demo {
+            background: #fff4d6;
+            padding: .6rem;
+        }
+
+        form {
+            max-width: 24rem;
+        }
+
+        label {
+            display: block;
+        }
+
+        label > input {
+            box-sizing: border-box;
+            display: block;
+            width: 100%;
+            padding: .5rem;
+            margin-top: .3rem;
+        }
+
+        button {
+            padding: .5rem 1rem;
+        }
+    </style>
 </head>
 <body>
 <main>
     <h1>MoulinOps ログイン</h1>
-    <p>DEMO DATA｜想定環境｜実在企業の構成ではありません</p>
+    <p class="demo">DEMO DATA｜想定環境｜実在企業の構成ではありません</p>
     <form method="post" action="{{ route('login.store') }}">
         @csrf
         <p><label>ユーザー名またはメールアドレス <input name="login" value="{{ old('login') }}" autocomplete="username" required></label></p>
