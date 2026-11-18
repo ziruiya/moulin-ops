@@ -1,10 +1,13 @@
 <?php
 
 use App\Http\Controllers\AssetController;
+use App\Http\Controllers\AuditEventController;
 use App\Http\Controllers\Auth\AuthController;
+use App\Http\Controllers\IncidentController;
 use App\Http\Controllers\UpdatePlanController;
 use App\Http\Controllers\UserManagementController;
 use App\Http\Controllers\VulnerabilityController;
+use App\Http\Controllers\WorkRecordController;
 use Illuminate\Support\Facades\Route;
 
 Route::get('/login', [AuthController::class, 'create'])->name('login');
@@ -13,6 +16,16 @@ Route::post('/logout', [AuthController::class, 'destroy'])->middleware('auth')->
 Route::get('/', [AuthController::class, 'create']);
 Route::middleware('auth')->group(function () {
     Route::resource('assets', AssetController::class)->only(['index', 'create', 'store', 'show', 'edit', 'update']);
+    Route::get('/incidents', [IncidentController::class, 'index'])->name('incidents.index');
+    Route::get('/incidents/create', [IncidentController::class, 'create'])->name('incidents.create');
+    Route::post('/incidents', [IncidentController::class, 'store'])->name('incidents.store');
+    Route::get('/incidents/{incident}', [IncidentController::class, 'show'])->name('incidents.show');
+    Route::put('/incidents/{incident}', [IncidentController::class, 'update'])->name('incidents.update');
+    Route::post('/incidents/{incident}/transition', [IncidentController::class, 'transition'])->name('incidents.transition');
+    Route::get('/work-records', [WorkRecordController::class, 'index'])->name('work-records.index');
+    Route::post('/work-records', [WorkRecordController::class, 'store'])->name('work-records.store');
+    Route::get('/work-records/{workRecord}', [WorkRecordController::class, 'show'])->name('work-records.show');
+    Route::get('/audit-events', [AuditEventController::class, 'index'])->name('audit-events.index');
     Route::get('/vulnerabilities', [VulnerabilityController::class, 'index'])->name('vulnerabilities.index');
     Route::get('/vulnerabilities/create', [VulnerabilityController::class, 'create'])->name('vulnerabilities.create');
     Route::post('/vulnerabilities', [VulnerabilityController::class, 'store'])->name('vulnerabilities.store');

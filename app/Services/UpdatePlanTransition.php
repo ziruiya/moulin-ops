@@ -122,8 +122,9 @@ class UpdatePlanTransition
     {
         $asset = $p->assets()->firstOrFail();
         $user = Auth::id() ?? $p->created_by;
-        $incident = Incident::create(['incident_code' => 'INC-'.strtoupper(bin2hex(random_bytes(6))), 'title' => $data['incident']['title'], 'category' => 'DEPLOYMENT', 'severity' => 'HIGH', 'priority' => 'P2', 'status' => 'NEW', 'description' => $data['incident']['description'] ?? null, 'reported_by' => $user]);
+        $incident = Incident::create(['incident_code' => 'INC-'.strtoupper(bin2hex(random_bytes(6))), 'title' => $data['incident']['title'], 'category' => 'DEPLOYMENT', 'severity' => 'HIGH', 'priority' => 'P2', 'status' => 'NEW', 'description' => $data['incident']['description'] ?? null, 'summary' => $data['incident']['title'], 'source' => 'UpdatePlan', 'assigned_to' => $p->operator_id ?? $user, 'detected_at' => now(), 'reported_at' => now(), 'reported_by' => $user]);
         $incident->updatePlans()->attach($p->id);
         $incident->assets()->attach($asset->id);
+        app(AuditLogger::class)->log($incident, 'incident_created', [], $incident->attributesToArray() + ['asset_ids' => [$asset->id], 'plan_ids' => [$p->id]]);
     }
 }

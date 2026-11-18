@@ -18,4 +18,9 @@ class Asset extends Model
     {
         return $this->hasMany(AssetRelationship::class, 'source_asset_id');
     }
+
+    public function workRecords(): HasMany
+    {
+        return $this->hasMany(WorkRecord::class);
+    }
 }

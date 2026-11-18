@@ -57,6 +57,12 @@ class AssetAccessTest extends TestCase
         $a = Asset::create(['asset_code' => 'A-1', 'name' => 'A', 'asset_type' => 'Server', 'operational_status' => 'Active']);
         $u = User::factory()->create();
         $w = WorkRecord::create(['record_code' => 'W-1', 'record_type' => 'Update', 'asset_id' => $a->id, 'user_id' => $u->id, 'summary' => 'x', 'action_summary' => 'x', 'environment' => 'demo', 'result' => 'Success', 'started_at' => now(), 'performed_at' => now()]);
+        try {
+            $w->update(['summary' => 'overwritten']);
+            self::fail('Work records must reject updates.');
+        } catch (\LogicException) {
+            self::assertSame('x', $w->fresh()->summary);
+        }
         $this->expectException(\LogicException::class);
         $w->delete();
     }

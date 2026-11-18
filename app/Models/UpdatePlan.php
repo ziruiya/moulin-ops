@@ -38,6 +38,11 @@ class UpdatePlan extends Model
         return $this->hasMany(WorkRecord::class, 'update_plan_id');
     }
 
+    public function incidents(): BelongsToMany
+    {
+        return $this->belongsToMany(Incident::class, 'incident_update_plans')->withTimestamps();
+    }
+
     public function creator(): BelongsTo
     {
         return $this->belongsTo(User::class, 'created_by');
