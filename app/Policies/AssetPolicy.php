@@ -34,6 +34,6 @@ class AssetPolicy
 
     public function delete(User $u, Asset $a): bool
     {
-        return $this->has($u,'Admin');
+        return $this->has($u, 'Admin');
     }
 }
