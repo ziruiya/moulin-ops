@@ -4,6 +4,7 @@ namespace App\Http\Controllers;
 
 use App\Models\Asset;
 use App\Models\AssetComponent;
+use App\Models\ChangeApproval;
 use App\Models\ChecklistItem;
 use App\Models\UpdatePlan;
 use App\Models\User;
@@ -17,6 +18,12 @@ use Illuminate\Validation\ValidationException;
 
 class UpdatePlanController extends Controller
 {
+    private const APPROVAL_CRITICAL_FIELDS = [
+        'impact', 'risk_reason', 'current_version', 'target_version', 'operator_id',
+        'test_plan', 'implementation_plan', 'verification_plan', 'rollback_plan', 'rollback_trigger',
+        'backup_reference', 'backup_verified', 'restore_test_passed',
+    ];
+
     public function index(Request $request)
     {
         $plans = UpdatePlan::with('assets')->when($request->filled('status'), fn ($q) => $q->where('status', $request->string('status')))->orderByRaw('planned_start_at IS NULL, planned_start_at')->orderBy('plan_code')->get();
@@ -58,7 +65,7 @@ class UpdatePlanController extends Controller
 
     public function show(UpdatePlan $updatePlan)
     {
-        $updatePlan->load(['assets', 'components', 'checklistItems.passedCorrections', 'approvals.approver', 'incidents', 'operator', 'reviewer', 'sourceAssessment.vulnerability']);
+        $updatePlan->load(['assets', 'components', 'checklistItems.passedCorrections', 'approvals.approver', 'approvals.invalidation', 'incidents', 'operator', 'reviewer', 'sourceAssessment.vulnerability']);
         $operators = Gate::allows('update', $updatePlan)
             ? User::whereHas('roles', fn ($roles) => $roles->where('name', 'Operator'))->orderBy('name')->get()
             : collect();
@@ -69,13 +76,32 @@ class UpdatePlanController extends Controller
     public function update(Request $r, UpdatePlan $updatePlan, AuditLogger $audit)
     {
         $this->authorize('update', $updatePlan);
-        $d = $r->validate(['impact' => 'nullable|string|max:255', 'test_plan' => 'nullable|string', 'implementation_plan' => 'nullable|string', 'verification_plan' => 'nullable|string', 'rollback_plan' => 'nullable|string', 'rollback_trigger' => 'nullable|string', 'backup_reference' => 'nullable|string', 'backup_verified' => 'nullable|boolean', 'restore_test_passed' => 'nullable|boolean', 'planned_start_at' => 'nullable|date', 'planned_end_at' => 'nullable|date', 'operator_id' => 'nullable|exists:users,id', 'current_version' => 'nullable|string', 'target_version' => 'nullable|string', 'risk_reason' => 'nullable|string']);
-        DB::transaction(function () use ($updatePlan, $d, $audit): void {
+        $data = $r->validate(['impact' => 'nullable|string|max:255', 'test_plan' => 'nullable|string', 'implementation_plan' => 'nullable|string', 'verification_plan' => 'nullable|string', 'rollback_plan' => 'nullable|string', 'rollback_trigger' => 'nullable|string', 'backup_reference' => 'nullable|string', 'backup_verified' => 'nullable|boolean', 'restore_test_passed' => 'nullable|boolean', 'planned_start_at' => 'nullable|date', 'planned_end_at' => 'nullable|date', 'operator_id' => 'nullable|exists:users,id', 'current_version' => 'nullable|string', 'target_version' => 'nullable|string', 'risk_reason' => 'nullable|string']);
+        DB::transaction(function () use ($updatePlan, $data, $audit): void {
             $plan = UpdatePlan::query()->lockForUpdate()->findOrFail($updatePlan->id);
             $this->authorize('update', $plan);
-            $old = $plan->only(array_keys($d));
-            $plan->update($d);
-            $audit->log($plan, 'plan_updated', $old, $d);
+            $oldValues = $plan->only(array_keys($data));
+            $plan->fill($data);
+
+            $changedCriticalValues = array_intersect_key($oldValues, $plan->getDirty(), array_flip(self::APPROVAL_CRITICAL_FIELDS));
+            $approvals = $changedCriticalValues === [] ? collect() : $plan->validApprovals()->get();
+            if ($approvals->isNotEmpty()) {
+                $oldState = $plan->only(['status', 'approver_id', 'blocked_from_status']);
+                $plan->fill(['status' => 'PENDING_APPROVAL', 'approver_id' => null, 'blocked_from_status' => null]);
+                $newState = $plan->only(array_keys($oldState));
+                $newCriticalValues = $plan->only(array_keys($changedCriticalValues));
+                foreach ($approvals as $approval) {
+                    $audit->log($approval, ChangeApproval::INVALIDATED_EVENT, $changedCriticalValues + $oldState, $newCriticalValues + $newState + [
+                        'update_plan_id' => $plan->id,
+                        'reason' => 'critical_plan_fields_changed',
+                    ]);
+                }
+                $oldValues += $oldState;
+                $data += $newState;
+            }
+
+            $plan->save();
+            $audit->log($plan, 'plan_updated', $oldValues, $data);
         });
 
         return back();

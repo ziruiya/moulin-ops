@@ -4,9 +4,12 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\MorphOne;
 
 class ChangeApproval extends Model
 {
+    public const INVALIDATED_EVENT = 'approval_invalidated';
+
     protected $guarded = [];
 
     protected $casts = ['decided_at' => 'datetime'];
@@ -19,6 +22,11 @@ class ChangeApproval extends Model
     public function approver(): BelongsTo
     {
         return $this->belongsTo(User::class, 'approver_id');
+    }
+
+    public function invalidation(): MorphOne
+    {
+        return $this->morphOne(AuditEvent::class, 'auditable')->where('event_type', self::INVALIDATED_EVENT);
     }
 
     protected static function booted(): void

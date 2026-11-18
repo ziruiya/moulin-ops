@@ -40,6 +40,51 @@ class UpdatePlanWorkflowTest extends TestCase
         return $plan;
     }
 
+    private function recordApproval(UpdatePlan $plan): ChangeApproval
+    {
+        $reviewer = User::factory()->create();
+        $reviewer->roles()->attach(Role::firstOrCreate(['name' => 'Reviewer']));
+        $this->actingAs($reviewer)->post(route('update-plans.approve', $plan), [
+            'decision' => 'APPROVED', 'comments' => 'Reviewed the change plan.',
+        ])->assertRedirect()->assertSessionHasNoErrors();
+
+        return $plan->approvals()->latest('id')->firstOrFail();
+    }
+
+    /** @return array{UpdatePlan, ChangeApproval} */
+    private function approvedPlan(User $operator): array
+    {
+        $plan = $this->plan($operator);
+        $plan->update([
+            'status' => 'PENDING_APPROVAL', 'operator_id' => $operator->id, 'target_version' => '2.0',
+            'backup_reference' => 'backup-1', 'backup_verified' => true, 'restore_test_passed' => true,
+            'planned_start_at' => '2026-11-20 01:00:00', 'planned_end_at' => '2026-11-20 03:00:00',
+        ]);
+        $approval = $this->recordApproval($plan);
+        $this->actingAs($operator)->post(route('update-plans.transition', $plan), ['status' => 'APPROVED'])
+            ->assertRedirect()->assertSessionHasNoErrors();
+
+        return [$plan->refresh(), $approval];
+    }
+
+    private function assertApprovalInvalidated(ChangeApproval $approval, User $actor, array $before, array $after, string $from): void
+    {
+        $this->assertDatabaseHas('update_plans', $after + [
+            'id' => $approval->update_plan_id, 'status' => 'PENDING_APPROVAL',
+            'approver_id' => null, 'blocked_from_status' => null,
+        ]);
+        $this->assertSame($approval->getRawOriginal(), $approval->fresh()->getRawOriginal());
+
+        $event = $approval->invalidation()->sole();
+        $this->assertSame($actor->id, $event->user_id);
+        $this->assertSame($from, $event->old_values['status']);
+        $this->assertSame('PENDING_APPROVAL', $event->new_values['status']);
+        $this->assertSame($approval->update_plan_id, $event->new_values['update_plan_id']);
+        $this->assertSame('critical_plan_fields_changed', $event->new_values['reason']);
+        $this->assertSame($before, array_intersect_key($event->old_values, $before));
+        $this->assertSame($after, array_intersect_key($event->new_values, $after));
+    }
+
     public function test_failed_checklist_item_cannot_be_directly_passed(): void
     {
         $user = $this->operator();
@@ -157,6 +202,9 @@ class UpdatePlanWorkflowTest extends TestCase
             $attributes['operator_id'] = $user->id;
         }
         $plan->forceFill($attributes + ['status' => $from])->save();
+        if (in_array($from, ['SCHEDULED', 'VERIFYING'], true)) {
+            $this->recordApproval($plan);
+        }
         $this->actingAs($user);
         try {
             app(UpdatePlanTransition::class)->transition($plan, $to, $data);
@@ -186,6 +234,7 @@ class UpdatePlanWorkflowTest extends TestCase
         $user = $this->operator();
         $plan = $this->plan($user);
         $plan->forceFill(['status' => 'APPROVED', 'operator_id' => $user->id, 'backup_verified' => true, 'backup_reference' => 'backup-42', 'restore_test_passed' => true, 'current_version' => '1.0', 'target_version' => '2.0', 'planned_start_at' => now()->subHour(), 'planned_end_at' => now()->addHour()])->save();
+        $this->recordApproval($plan);
         $this->actingAs($user);
         $service = app(UpdatePlanTransition::class);
         $service->transition($plan, 'SCHEDULED');
@@ -218,6 +267,7 @@ class UpdatePlanWorkflowTest extends TestCase
         $start = Carbon::parse('2026-11-20 01:00:00');
         $end = Carbon::parse('2026-11-20 03:00:00');
         $plan->forceFill(['status' => 'SCHEDULED', 'operator_id' => $user->id, 'backup_verified' => true, 'backup_reference' => 'backup-1', 'restore_test_passed' => true, 'planned_start_at' => $start, 'planned_end_at' => $end])->save();
+        $this->recordApproval($plan);
         $this->actingAs($user);
         $service = app(UpdatePlanTransition::class);
         $service->transition($plan, 'EXECUTING');
@@ -322,6 +372,131 @@ class UpdatePlanWorkflowTest extends TestCase
         foreach (['decided_at', 'created_at', 'updated_at'] as $field) {
             $this->assertSame($snapshot[$field]->toDateTimeString(), $fresh->{$field}->toDateTimeString());
         }
+    }
+
+    public function test_target_version_change_invalidates_approval_and_preserves_history(): void
+    {
+        $operator = $this->operator();
+        [$plan, $approval] = $this->approvedPlan($operator);
+
+        $this->put(route('update-plans.update', $plan), ['target_version' => '2.1'])
+            ->assertRedirect()->assertSessionHasNoErrors();
+
+        $this->assertApprovalInvalidated($approval, $operator, ['target_version' => '2.0'], ['target_version' => '2.1'], 'APPROVED');
+        $auditUrl = route('audit-events.index', ['type' => ChangeApproval::class, 'id' => $approval->id]);
+        $this->get(route('update-plans.show', $plan))->assertOk()->assertSee('承認失効（重要項目の変更）')->assertSee($auditUrl);
+        $this->get($auditUrl)->assertOk()->assertSee('approval_invalidated')->assertSee('target_version');
+    }
+
+    public function test_operator_change_invalidates_a_scheduled_plans_approval(): void
+    {
+        $operator = $this->operator();
+        $replacement = $this->operator();
+        [$plan, $approval] = $this->approvedPlan($operator);
+        $this->post(route('update-plans.transition', $plan), ['status' => 'SCHEDULED'])
+            ->assertRedirect()->assertSessionHasNoErrors();
+
+        $this->put(route('update-plans.update', $plan), ['operator_id' => (string) $replacement->id])
+            ->assertRedirect()->assertSessionHasNoErrors();
+
+        $this->assertApprovalInvalidated($approval, $operator, ['operator_id' => $operator->id], ['operator_id' => $replacement->id], 'SCHEDULED');
+    }
+
+    public function test_impact_change_invalidates_approval_for_a_plan_on_hold(): void
+    {
+        $operator = $this->operator();
+        [$plan, $approval] = $this->approvedPlan($operator);
+        $this->post(route('update-plans.transition', $plan), ['status' => 'BLOCKED'])
+            ->assertRedirect()->assertSessionHasNoErrors();
+
+        $this->put(route('update-plans.update', $plan), ['impact' => 'Customer checkout unavailable'])
+            ->assertRedirect()->assertSessionHasNoErrors();
+
+        $this->assertApprovalInvalidated($approval, $operator, ['impact' => 'User impact assessed'], ['impact' => 'Customer checkout unavailable'], 'BLOCKED');
+    }
+
+    public function test_critical_edits_before_approval_keep_the_testing_state(): void
+    {
+        $operator = $this->operator();
+        $plan = $this->plan($operator);
+        $plan->update(['status' => 'TESTING']);
+
+        $this->actingAs($operator)->put(route('update-plans.update', $plan), ['target_version' => '2.1', 'impact' => 'Revised scope'])
+            ->assertRedirect()->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('update_plans', ['id' => $plan->id, 'target_version' => '2.1', 'impact' => 'Revised scope', 'status' => 'TESTING']);
+        $this->assertDatabaseMissing('audit_events', ['event_type' => 'approval_invalidated']);
+    }
+
+    public function test_invalidated_approval_cannot_authorize_approval_or_scheduling(): void
+    {
+        $operator = $this->operator();
+        [$plan] = $this->approvedPlan($operator);
+        $this->put(route('update-plans.update', $plan), ['target_version' => '2.1'])
+            ->assertRedirect()->assertSessionHasNoErrors();
+        $url = route('update-plans.transition', $plan);
+
+        $this->postJson($url, ['status' => 'APPROVED'])->assertUnprocessable()->assertJsonValidationErrors('approval');
+        $this->postJson($url, ['status' => 'SCHEDULED'])->assertUnprocessable()->assertJsonValidationErrors('status');
+        $this->assertSame('PENDING_APPROVAL', $plan->fresh()->status);
+
+        $plan->fresh()->update(['status' => 'APPROVED']);
+        $this->postJson($url, ['status' => 'SCHEDULED'])->assertUnprocessable()->assertJsonValidationErrors('approval');
+        $this->assertSame('APPROVED', $plan->fresh()->status);
+    }
+
+    public function test_new_approval_allows_scheduling_and_execution_after_invalidation(): void
+    {
+        $operator = $this->operator();
+        $executor = $this->operator();
+        [$plan, $oldApproval] = $this->approvedPlan($operator);
+        $this->put(route('update-plans.update', $plan), ['target_version' => '2.1'])
+            ->assertRedirect()->assertSessionHasNoErrors();
+
+        $newApproval = $this->recordApproval($plan);
+        $url = route('update-plans.transition', $plan);
+        $this->actingAs($operator)->post($url, ['status' => 'APPROVED'])->assertRedirect()->assertSessionHasNoErrors();
+        $this->post($url, ['status' => 'SCHEDULED'])->assertRedirect()->assertSessionHasNoErrors();
+        $this->actingAs($executor)->post($url, ['status' => 'EXECUTING'])->assertRedirect()->assertSessionHasNoErrors();
+
+        $this->assertSame(2, $plan->approvals()->count());
+        $this->assertSame($newApproval->id, $plan->validApprovals()->sole()->id);
+        $this->assertModelExists($oldApproval);
+        $this->assertDatabaseHas('update_plans', [
+            'id' => $plan->id, 'status' => 'EXECUTING', 'target_version' => '2.1',
+            'approver_id' => $newApproval->approver_id, 'operator_id' => $operator->id,
+        ]);
+        $this->assertDatabaseHas('work_records', ['update_plan_id' => $plan->id, 'user_id' => $executor->id, 'summary' => 'Update plan EXECUTING']);
+    }
+
+    public function test_changing_backup_and_restore_flags_invalidates_approval(): void
+    {
+        $operator = $this->operator();
+        [$plan, $approval] = $this->approvedPlan($operator);
+
+        $this->put(route('update-plans.update', $plan), ['backup_verified' => '0', 'restore_test_passed' => '0'])
+            ->assertRedirect()->assertSessionHasNoErrors();
+
+        $this->assertApprovalInvalidated($approval, $operator,
+            ['backup_verified' => true, 'restore_test_passed' => true],
+            ['backup_verified' => false, 'restore_test_passed' => false],
+            'APPROVED',
+        );
+    }
+
+    public function test_maintenance_window_edits_and_unchanged_critical_values_preserve_approval(): void
+    {
+        $operator = $this->operator();
+        [$plan, $approval] = $this->approvedPlan($operator);
+
+        $this->put(route('update-plans.update', $plan), [
+            'planned_end_at' => '2026-11-20 04:00:00', 'operator_id' => (string) $operator->id,
+            'target_version' => '2.0', 'backup_verified' => '1', 'restore_test_passed' => '1',
+        ])->assertRedirect()->assertSessionHasNoErrors();
+
+        $this->assertDatabaseHas('update_plans', ['id' => $plan->id, 'status' => 'APPROVED', 'planned_end_at' => '2026-11-20 04:00:00']);
+        $this->assertSame($approval->id, $plan->validApprovals()->sole()->id);
+        $this->assertDatabaseMissing('audit_events', ['event_type' => 'approval_invalidated']);
     }
 
     public function test_approval_rejects_self_approval_in_policy_and_database(): void

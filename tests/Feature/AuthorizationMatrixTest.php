@@ -55,6 +55,7 @@ class AuthorizationMatrixTest extends TestCase
             'status' => 'SCHEDULED', 'operator_id' => $actor->id, 'backup_reference' => 'DEMO-BACKUP',
             'backup_verified' => true, 'restore_test_passed' => true, 'planned_start_at' => now(), 'planned_end_at' => now()->addHour(),
         ]);
+        $this->approveScheduledPlan($scheduled);
         $this->postJson(route('update-plans.transition', $scheduled), ['status' => 'EXECUTING', 'operator_id' => $initiator->id])
             ->assertStatus($execute);
         $this->assertSame($execute === 302 ? 'EXECUTING' : 'SCHEDULED', $scheduled->fresh()->status);
@@ -106,6 +107,7 @@ class AuthorizationMatrixTest extends TestCase
             'status' => 'SCHEDULED', 'operator_id' => $admin->id, 'backup_reference' => 'DEMO-BACKUP', 'backup_verified' => true,
             'restore_test_passed' => true, 'planned_start_at' => now(), 'planned_end_at' => now()->addHour(),
         ]);
+        $this->approveScheduledPlan($plan);
         $execute = route('update-plans.transition', $plan);
         $this->actingAs($this->user('Operator'))->postJson($execute, ['status' => 'EXECUTING'])->assertUnprocessable();
         $this->assertNull($plan->fresh()->actual_start_at);
@@ -171,6 +173,17 @@ class AuthorizationMatrixTest extends TestCase
         $this->post($url($other), ['status' => 'Passed', 'evidence' => 'Verified'])->assertRedirect();
         $this->post(route('update-plans.transition', $plan), ['status' => 'TESTING'])->assertRedirect()->assertSessionHasNoErrors();
         $this->assertSame('TESTING', $plan->fresh()->status);
+    }
+
+    private function approveScheduledPlan(UpdatePlan $plan): void
+    {
+        $plan->approvals()->create([
+            'initiated_by' => $plan->created_by,
+            'executed_by' => $plan->operator_id,
+            'approver_id' => $this->user('Reviewer')->id,
+            'decision' => 'APPROVED',
+            'decided_at' => now(),
+        ]);
     }
 
     private function user(string $role): User

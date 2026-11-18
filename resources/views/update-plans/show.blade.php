@@ -126,7 +126,11 @@
 
     <h2>承認記録</h2>
     @foreach($plan->approvals as $approval)
-        <p>{{ $approval->decision === 'APPROVED' ? '承認' : '差し戻し' }} / {{ $approval->decided_at }} / {{ $approval->approver->name }} @if($approval->comments) / {{ $approval->comments }} @endif</p>
+        <p>{{ $approval->decision === 'APPROVED' ? '承認' : '差し戻し' }} / {{ $approval->decided_at }} / {{ $approval->approver->name }} @if($approval->comments) / {{ $approval->comments }} @endif
+            @if($approval->invalidation)
+                <a href="{{ route('audit-events.index', ['type' => $approval::class, 'id' => $approval->id]) }}">承認失効（重要項目の変更）</a>
+            @endif
+        </p>
     @endforeach
     @can('approve', $plan)
         @if($plan->status === 'PENDING_APPROVAL')

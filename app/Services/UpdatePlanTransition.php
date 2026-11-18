@@ -19,6 +19,8 @@ class UpdatePlanTransition
 {
     private const FLOW = ['DRAFT' => ['ASSESSMENT', 'CANCELLED'], 'ASSESSMENT' => ['TESTING', 'BLOCKED', 'CANCELLED'], 'TESTING' => ['PENDING_APPROVAL', 'BLOCKED', 'CANCELLED'], 'PENDING_APPROVAL' => ['APPROVED', 'REJECTED', 'BLOCKED', 'CANCELLED'], 'REJECTED' => ['ASSESSMENT'], 'APPROVED' => ['SCHEDULED', 'BLOCKED', 'CANCELLED'], 'SCHEDULED' => ['EXECUTING', 'BLOCKED', 'CANCELLED'], 'EXECUTING' => ['VERIFYING', 'FAILED', 'ROLLBACK_REQUIRED', 'BLOCKED'], 'VERIFYING' => ['COMPLETED', 'ROLLBACK_REQUIRED', 'EMERGENCY_REVIEW', 'FAILED'], 'FAILED' => ['ROLLBACK_REQUIRED'], 'ROLLBACK_REQUIRED' => ['ROLLING_BACK'], 'ROLLING_BACK' => ['ROLLED_BACK', 'ROLLBACK_FAILED'], 'ROLLBACK_FAILED' => [], 'ROLLED_BACK' => [], 'COMPLETED' => [], 'BLOCKED' => [], 'CANCELLED' => [], 'EMERGENCY_REVIEW' => []];
 
+    private const APPROVAL_REQUIRED_STATES = ['APPROVED', 'SCHEDULED', 'EXECUTING', 'VERIFYING', 'COMPLETED'];
+
     private const REQUIRED_THROUGH_PHASE = [
         'TESTING' => 1,
         'PENDING_APPROVAL' => 2,
@@ -37,7 +39,7 @@ class UpdatePlanTransition
         DB::transaction(function () use ($plan, $reviewer, $decision, $comments): void {
             $plan = UpdatePlan::query()->lockForUpdate()->findOrFail($plan->id);
             Gate::forUser($reviewer)->authorize('approve', $plan);
-            if ($plan->approvals()->where('decision', 'APPROVED')->exists()) {
+            if ($plan->validApprovals()->exists()) {
                 throw ValidationException::withMessages(['decision' => '承認記録は変更できません。']);
             }
             $approval = $plan->approvals()->create([
@@ -66,8 +68,7 @@ class UpdatePlanTransition
             } elseif (! in_array($to, self::FLOW[$from] ?? [], true)) {
                 throw ValidationException::withMessages(['status' => "{$from} から {$to} には変更できません。"]);
             }
-            $approval = $to === 'APPROVED' ? $plan->approvals()->where('decision', 'APPROVED')->latest('id')->first() : null;
-            $this->guard($plan, $to, $data, $actor, $approval);
+            $approval = $this->guard($plan, $to, $data, $actor);
             $plan->status = $to;
             if ($to === 'BLOCKED') {
                 $plan->blocked_from_status = $from;
@@ -80,7 +81,6 @@ class UpdatePlanTransition
             }
             if ($to === 'EXECUTING') {
                 $plan->actual_start_at ??= now();
-                $plan->operator_id = $actor?->id ?? $plan->operator_id;
             }
             if (in_array($to, ['COMPLETED', 'ROLLED_BACK', 'ROLLBACK_FAILED', 'EMERGENCY_REVIEW'], true)) {
                 $plan->actual_end_at = now();
@@ -106,7 +106,7 @@ class UpdatePlanTransition
         });
     }
 
-    private function guard(UpdatePlan $plan, string $to, array $data, ?User $actor, ?ChangeApproval $approval): void
+    private function guard(UpdatePlan $plan, string $to, array $data, ?User $actor): ?ChangeApproval
     {
         if ($to === 'TESTING' && blank($plan->impact)) {
             throw ValidationException::withMessages(['impact' => '影響調査の結果を記録してください。']);
@@ -114,8 +114,12 @@ class UpdatePlanTransition
         if ($to === 'PENDING_APPROVAL' && (blank($plan->test_plan) || ! $this->passedPhase($plan, 2, withEvidence: true))) {
             throw ValidationException::withMessages(['checklist' => 'テスト計画と事前検証の証跡が必要です。']);
         }
-        if ($to === 'APPROVED' && ! $approval) {
-            throw ValidationException::withMessages(['approval' => '独立した承認者の承認記録が必要です。']);
+        $approval = null;
+        if (in_array($to, self::APPROVAL_REQUIRED_STATES, true)) {
+            $approval = $plan->validApprovals()->latest('id')->first();
+            if (! $approval) {
+                throw ValidationException::withMessages(['approval' => '独立した承認者による有効な承認が必要です。']);
+            }
         }
         if ($to === 'EXECUTING') {
             if (! $plan->backup_verified || blank($plan->backup_reference) || ! $plan->restore_test_passed || ! $plan->operator_id || ! $plan->planned_start_at || ! $plan->planned_end_at || $plan->planned_end_at->lte($plan->planned_start_at)) {
@@ -123,7 +127,7 @@ class UpdatePlanTransition
             }
             if ((in_array(strtoupper($plan->risk_level ?? ''), ['HIGH', 'CRITICAL'], true)
                     && ($actor?->id !== $plan->operator_id || ! $actor->roles()->where('name', 'Operator')->exists()))
-                || ($actor && $plan->approvals()->where('decision', 'APPROVED')->where('approver_id', $actor->id)->exists())) {
+                || ($actor && $plan->validApprovals()->where('approver_id', $actor->id)->exists())) {
                 throw ValidationException::withMessages(['execution' => '実施担当者の権限と承認者からの独立性を確認してください。']);
             }
         }
@@ -148,6 +152,8 @@ class UpdatePlanTransition
         if ($to === 'ROLLBACK_FAILED' && blank($data['incident']['title'] ?? null)) {
             throw ValidationException::withMessages(['incident' => '障害の詳細を記録してください。']);
         }
+
+        return $approval;
     }
 
     private function hasIncompleteRequiredItems(UpdatePlan $plan, array $phases): bool

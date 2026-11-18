@@ -34,7 +34,7 @@ class UpdatePlan extends Model
 
     protected $guarded = [];
 
-    protected $casts = ['backup_verified' => 'boolean', 'restore_test_passed' => 'boolean', 'planned_start_at' => 'datetime', 'planned_end_at' => 'datetime', 'actual_start_at' => 'datetime', 'actual_end_at' => 'datetime'];
+    protected $casts = ['backup_verified' => 'boolean', 'restore_test_passed' => 'boolean', 'operator_id' => 'integer', 'planned_start_at' => 'datetime', 'planned_end_at' => 'datetime', 'actual_start_at' => 'datetime', 'actual_end_at' => 'datetime'];
 
     protected static function booted(): void
     {
@@ -63,6 +63,11 @@ class UpdatePlan extends Model
     public function approvals(): HasMany
     {
         return $this->hasMany(ChangeApproval::class, 'update_plan_id');
+    }
+
+    public function validApprovals(): HasMany
+    {
+        return $this->approvals()->where('decision', 'APPROVED')->whereDoesntHave('invalidation');
     }
 
     public function workRecords(): HasMany
