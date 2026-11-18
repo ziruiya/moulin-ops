@@ -5,10 +5,10 @@ namespace App\Http\Controllers;
 use App\Models\Asset;
 use App\Models\AssetComponent;
 use App\Models\Incident;
-use App\Models\LifecycleRecord;
 use App\Models\UpdatePlan;
 use App\Models\VulnerabilityComponentAssessment;
 use App\Models\VulnerabilityRecord;
+use App\Services\SettingsService;
 use Carbon\CarbonInterface;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Collection;
@@ -17,8 +17,6 @@ use Illuminate\View\View;
 class DashboardController extends Controller
 {
     private const TIMEZONE = 'Asia/Tokyo';
-
-    private const RESTORE_REVIEW_DAYS = 90;
 
     private const OPEN_HANDLING = ['OPEN', 'ASSESSING', 'ACTION_REQUIRED', 'REMEDIATION_PLANNED', 'IN_REMEDIATION', 'FIX_PENDING_VERIFICATION'];
 
@@ -32,11 +30,14 @@ class DashboardController extends Controller
 
     private const WINDOW_STATUSES = ['PENDING_APPROVAL', 'APPROVED', 'SCHEDULED', 'EXECUTING', 'VERIFYING', 'BLOCKED'];
 
-    public function __invoke(): View
+    public function __invoke(SettingsService $settings): View
     {
         $this->authorize('viewAny', Asset::class);
         $now = now(self::TIMEZONE);
         $today = $now->copy()->startOfDay();
+        $rules = $settings->rules();
+        $reviewCutoff = $now->copy()->subDays($rules['data_review_days']);
+        $restoreCutoff = $today->copy()->subDays($rules['restore_review_days']);
         $assets = Asset::with(['components.currentLifecycle', 'latestRestoreTest'])
             ->where('operational_status', '!=', 'Retired')->whereNull('deleted_at')->get();
         $vulnerabilities = VulnerabilityRecord::with(['assessments' => fn ($query) => $query
@@ -48,9 +49,9 @@ class DashboardController extends Controller
         return view('dashboard', [
             'initialInventory' => $assets->isEmpty() && $vulnerabilities->isEmpty() && $plans->isEmpty() && $openIncidents->isEmpty(),
             'today' => $today,
-            'urgentRisks' => $this->urgentRisks($assets, $vulnerabilities, $now),
-            'dataChecks' => $this->dataChecks($assets, $now),
-            'restoreChecks' => $this->restoreChecks($assets, $now),
+            'urgentRisks' => $this->urgentRisks($assets, $vulnerabilities, $today, $reviewCutoff, $rules['eol_warning_days']),
+            'dataChecks' => $this->dataChecks($assets, $reviewCutoff),
+            'restoreChecks' => $this->restoreChecks($assets, $restoreCutoff),
             'changes' => $this->changes($plans),
             'openIncidents' => $openIncidents,
             'pendingVulnerabilities' => $this->pendingVulnerabilities($vulnerabilities),
@@ -58,9 +59,8 @@ class DashboardController extends Controller
         ]);
     }
 
-    private function urgentRisks(Collection $assets, Collection $vulnerabilities, CarbonInterface $now): Collection
+    private function urgentRisks(Collection $assets, Collection $vulnerabilities, CarbonInterface $today, CarbonInterface $reviewCutoff, int $warningDays): Collection
     {
-        $recentVerification = $now->copy()->subDays(LifecycleRecord::REVIEW_DAYS);
         $risks = collect();
         foreach ($vulnerabilities as $vulnerability) {
             if (! in_array($vulnerability->severity, ['CRITICAL', 'HIGH'], true)) {
@@ -88,14 +88,19 @@ class DashboardController extends Controller
             foreach ($asset->components as $component) {
                 $production = $component->environment ? strcasecmp($component->environment, 'Production') === 0 : $asset->isProduction();
                 $lifecycle = $component->verifiedLifecycle();
-                if (! $production || ! $lifecycle?->hasEndedSupport($now) || $lifecycle->verified_at->lt($recentVerification)) {
+                if (! $production || ! $lifecycle || $lifecycle->verified_at->lt($reviewCutoff)) {
                     continue;
                 }
+                $ended = $lifecycle->hasEndedSupport($today);
+                if (! $ended && ! $lifecycle->endsSupportSoon($today, $warningDays)) {
+                    continue;
+                }
+                $label = $ended ? '本番・サポート終了（EOL）' : '本番・サポート終了間近（EOL）';
                 $risks->push([
                     'url' => $this->componentUrl($asset, $component),
                     'title' => $asset->asset_code.' '.$component->product_name.' '.$component->version,
-                    'detail' => '本番・サポート終了（EOL）'.($lifecycle->eol_date ? ' / '.$lifecycle->eol_date : '').' / '.$lifecycle->source_name,
-                    'order' => [1, $asset->internet_exposed ? 0 : 1, $this->criticality($asset), 1, 0, $asset->asset_code, $component->id],
+                    'detail' => $label.($lifecycle->eol_date ? ' / '.$lifecycle->eol_date : '').' / '.$lifecycle->source_name,
+                    'order' => [$ended ? 1 : 2, $asset->internet_exposed ? 0 : 1, $this->criticality($asset), 1, 0, $asset->asset_code, $component->id],
                 ]);
             }
         }
@@ -103,9 +108,8 @@ class DashboardController extends Controller
         return $risks->sortBy('order')->values();
     }
 
-    private function dataChecks(Collection $assets, CarbonInterface $now): Collection
+    private function dataChecks(Collection $assets, CarbonInterface $cutoff): Collection
     {
-        $cutoff = $now->copy()->subDays(LifecycleRecord::REVIEW_DAYS);
         $checks = collect();
         foreach ($assets as $asset) {
             $issues = [];
@@ -158,9 +162,8 @@ class DashboardController extends Controller
         return $checks->sortBy('order')->values();
     }
 
-    private function restoreChecks(Collection $assets, CarbonInterface $now): Collection
+    private function restoreChecks(Collection $assets, CarbonInterface $cutoff): Collection
     {
-        $cutoff = $now->copy()->subDays(self::RESTORE_REVIEW_DAYS)->startOfDay();
         $checks = collect();
         foreach ($assets as $asset) {
             $test = $asset->latestRestoreTest;

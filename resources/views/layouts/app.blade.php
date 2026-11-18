@@ -16,6 +16,9 @@
 <a href="{{ route('vulnerabilities.index') }}">脆弱性管理</a>
 <a href="{{ route('update-plans.index') }}">更新・変更管理</a>
 @if(auth()->user()->roles()->where('name', 'Admin')->exists())<a href="{{ route('settings.users.index') }}">ユーザー管理</a>@endif
+@can('manage-system-settings')
+    <a href="{{ route('settings.system.index') }}" @if(request()->routeIs('settings.system.index')) aria-current="page" @endif>システム設定</a>
+@endcan
 <form method="post" action="{{ route('logout') }}">@csrf<button>ログアウト</button></form>
 </nav>
 <p class="demo">DEMO DATA｜想定環境｜実在企業の構成ではありません</p>

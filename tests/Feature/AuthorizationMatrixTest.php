@@ -8,6 +8,7 @@ use App\Models\Role;
 use App\Models\UpdatePlan;
 use App\Models\User;
 use App\Models\WorkRecord;
+use App\Services\SettingsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use PHPUnit\Framework\Attributes\DataProvider;
 use Tests\TestCase;
@@ -62,6 +63,31 @@ class AuthorizationMatrixTest extends TestCase
             'environment' => 'DEMO', 'result' => 'Success', 'started_at' => now()->toDateTimeString(), 'performed_at' => now()->toDateTimeString(),
         ])->assertStatus($write);
         $this->assertSame($write === 302, WorkRecord::where('asset_id', $asset->id)->where('summary', 'Manual evidence')->exists());
+    }
+
+    public static function systemSettingsPermissions(): array
+    {
+        return [
+            'Admin' => ['Admin', 200, 302],
+            'Operator' => ['Operator', 403, 403],
+            'Reviewer' => ['Reviewer', 403, 403],
+            'Viewer' => ['Viewer', 403, 403],
+        ];
+    }
+
+    #[DataProvider('systemSettingsPermissions')]
+    public function test_system_settings_permission_matrix(string $role, int $read, int $write): void
+    {
+        $this->actingAs($this->user($role));
+        $url = route('settings.system.index');
+
+        $dashboard = $this->get(route('dashboard'))->assertOk();
+        $this->get($url)->assertStatus($read);
+        $this->post(route('settings.system.update'), ['eol_warning_days' => 15] + SettingsService::DEFAULTS)->assertStatus($write);
+
+        $this->assertSame($read === 200, str_contains($dashboard->getContent(), 'href="'.$url.'"'));
+        $this->assertSame($write === 302 ? 15 : 60, app(SettingsService::class)->rules()['eol_warning_days']);
+        $this->assertDatabaseCount('audit_events', $write === 302 ? 1 : 0);
     }
 
     public function test_admin_can_write_inventory_and_only_the_assigned_operator_can_start_a_high_risk_change(): void

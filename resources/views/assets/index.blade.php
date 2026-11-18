@@ -31,7 +31,7 @@
                 <tr>
                     <td><a href="{{ route('assets.show', $asset) }}">{{ $asset->asset_code }}</a></td>
                     <td>{{ $asset->name }}</td><td>{{ $asset->asset_type }}</td><td>{{ $asset->environment }}</td><td>{{ $asset->operational_status }}</td>
-                    <td>{{ $asset->components->map->lifecycleLabel()->unique()->join(' / ') ?: 'コンポーネント未登録' }}</td>
+                    <td>{{ $asset->components->map->lifecycleLabel($lifecycleRules)->unique()->join(' / ') ?: 'コンポーネント未登録' }}</td>
                 </tr>
             @empty
                 <tr><td colspan="6">該当する資産はありません。</td></tr>

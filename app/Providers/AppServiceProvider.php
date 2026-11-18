@@ -9,6 +9,7 @@ use App\Models\User;
 use App\Models\VulnerabilityRecord;
 use App\Policies\AssetPolicy;
 use App\Policies\IncidentPolicy;
+use App\Policies\SystemSettingsPolicy;
 use App\Policies\UpdatePlanPolicy;
 use App\Policies\VulnerabilityPolicy;
 use Illuminate\Support\Facades\Gate;
@@ -25,5 +26,6 @@ class AppServiceProvider extends ServiceProvider
         Gate::policy(VulnerabilityRecord::class, VulnerabilityPolicy::class);
         Gate::policy(UpdatePlan::class, UpdatePlanPolicy::class);
         Gate::define('manage-users', fn (User $user): bool => $user->roles()->where('name', 'Admin')->exists());
+        Gate::define('manage-system-settings', [SystemSettingsPolicy::class, 'manage']);
     }
 }

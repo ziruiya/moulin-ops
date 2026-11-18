@@ -23,7 +23,7 @@
         <section id="component-{{ $component->id }}">
             <h3>{{ $component->product_name }} {{ $component->version ?? 'バージョン不明' }}</h3>
             <p>{{ $component->component_type }} / {{ $component->environment ?? $asset->environment }} / {{ $component->vendor_name ?? '提供元不明' }}</p>
-            <p>バージョンの情報源 {{ $component->version_source ?? '不明' }} / ライフサイクル {{ $component->lifecycleLabel() }}</p>
+            <p>バージョンの情報源 {{ $component->version_source ?? '不明' }} / ライフサイクル {{ $component->lifecycleLabel($lifecycleRules) }}</p>
             @if($component->currentLifecycle)
                 @php($lifecycle = $component->currentLifecycle)
                 <p>

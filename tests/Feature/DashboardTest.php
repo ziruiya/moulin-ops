@@ -11,6 +11,7 @@ use App\Models\User;
 use App\Models\VulnerabilityComponentAssessment;
 use App\Models\VulnerabilityRecord;
 use App\Models\WorkRecord;
+use App\Services\SettingsService;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
 use Tests\TestCase;
@@ -120,6 +121,84 @@ class DashboardTest extends TestCase
         $this->assertSame(['CONFIRMED', $potential->vulnerability_code, 'LOW'], $response->viewData('pendingVulnerabilities')->pluck('vulnerability_code')->all());
         $this->assertSame([$maintenance->id], $response->viewData('maintenanceWindows')->modelKeys());
         $response->assertSee('11/17 23:45–11/18 00:30');
+    }
+
+    public function test_eol_warning_threshold_changes_dashboard_and_asset_labels(): void
+    {
+        $this->travelTo(Carbon::parse('2026-11-18 15:00:00', 'Asia/Tokyo'));
+        $viewer = $this->viewer();
+        $asset = $this->asset('EOL-WARNING');
+        $component = $this->inventoryComponent($asset, 'Boundary runtime', '2026-12-18');
+        $url = route('assets.show', $asset).'#component-'.$component->id;
+
+        $this->actingAs($viewer)->get(route('dashboard'))->assertOk()
+            ->assertViewHas('urgentRisks', fn ($risks) => $risks->pluck('url')->all() === [$url])
+            ->assertSee('本番・サポート終了間近（EOL）');
+        $this->get(route('assets.show', $asset))->assertSee('通常サポート・終了間近');
+        $this->get(route('assets.index'))->assertSee('通常サポート・終了間近');
+
+        $this->saveRules(['eol_warning_days' => 10]);
+
+        $this->actingAs($viewer)->get(route('dashboard'))->assertOk()
+            ->assertViewHas('urgentRisks', fn ($risks) => $risks->isEmpty())
+            ->assertDontSee($url);
+        $this->get(route('assets.show', $asset))->assertSee('通常サポート')->assertDontSee('終了間近');
+        $this->get(route('assets.index'))->assertSee('通常サポート')->assertDontSee('終了間近');
+    }
+
+    public function test_data_review_period_reclassifies_inventory_and_lifecycle_evidence(): void
+    {
+        $this->travelTo(Carbon::parse('2026-11-18 15:00:00', 'Asia/Tokyo'));
+        $viewer = $this->viewer();
+        $checkedAt = now()->subDays(45);
+        $asset = $this->asset('REVIEW-PERIOD', ['last_verified_at' => $checkedAt]);
+        $component = $this->inventoryComponent($asset, 'Reviewed runtime', '2026-10-01', ['verified_at' => $checkedAt]);
+        $assetUrl = route('assets.show', $asset);
+        $componentUrl = $assetUrl.'#component-'.$component->id;
+
+        $this->actingAs($viewer)->get(route('dashboard'))->assertOk()
+            ->assertViewHas('dataChecks', fn ($checks) => $checks->isEmpty())
+            ->assertViewHas('urgentRisks', fn ($risks) => $risks->pluck('url')->all() === [$componentUrl]);
+
+        $this->saveRules(['data_review_days' => 30]);
+
+        $this->actingAs($viewer)->get(route('dashboard'))->assertOk()
+            ->assertViewHas('dataChecks', fn ($checks) => $checks->pluck('url')->all() === [$assetUrl, $componentUrl])
+            ->assertViewHas('urgentRisks', fn ($risks) => $risks->isEmpty())
+            ->assertSee('棚卸し情報が更新期限超過')
+            ->assertSee('ライフサイクル情報が更新期限超過');
+        $this->get($assetUrl)->assertSee('要再確認');
+
+        $this->saveRules(['data_review_days' => 90]);
+
+        $this->actingAs($viewer)->get(route('dashboard'))->assertOk()
+            ->assertViewHas('dataChecks', fn ($checks) => $checks->isEmpty())
+            ->assertViewHas('urgentRisks', fn ($risks) => $risks->pluck('url')->all() === [$componentUrl]);
+    }
+
+    public function test_restore_review_period_changes_the_backup_and_restore_partition(): void
+    {
+        $this->travelTo(Carbon::parse('2026-11-18 15:00:00', 'Asia/Tokyo'));
+        $viewer = $this->viewer();
+        $asset = $this->asset('RESTORE-PERIOD');
+        $restore = $this->workRecord($asset, $viewer, 'RESTORE-PERIOD', 'Restore', 'Success', 45);
+
+        $this->actingAs($viewer)->get(route('dashboard'))->assertOk()
+            ->assertViewHas('restoreChecks', fn ($checks) => $checks->isEmpty());
+
+        $this->saveRules(['restore_review_days' => 30]);
+
+        $this->actingAs($viewer)->get(route('dashboard'))->assertOk()
+            ->assertViewHas('restoreChecks', fn ($checks) => $checks->pluck('url')->all() === [route('work-records.show', $restore)])
+            ->assertSee('復元テストの再検証期限超過');
+    }
+
+    private function saveRules(array $overrides): void
+    {
+        $admin = User::factory()->create();
+        $admin->roles()->attach(Role::firstOrCreate(['name' => 'Admin']));
+        $this->actingAs($admin)->post(route('settings.system.update'), $overrides + SettingsService::DEFAULTS)
+            ->assertRedirectToRoute('settings.system.index')->assertSessionHasNoErrors();
     }
 
     private function asset(string $code, array $fields = []): Asset

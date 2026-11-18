@@ -7,8 +7,6 @@ use Illuminate\Database\Eloquent\Model;
 
 class LifecycleRecord extends Model
 {
-    public const REVIEW_DAYS = 90;
-
     protected $table = 'component_lifecycle_records';
 
     protected $guarded = [];
@@ -31,5 +29,14 @@ class LifecycleRecord extends Model
         return ! in_array($this->lifecycle_status, ['STALE', 'CONFLICT'], true)
             && ($this->support_phase === 'EOL'
                 || ($this->date_precision === 'DAY' && $this->eol_date && $this->eol_date < $date->toDateString()));
+    }
+
+    public function endsSupportSoon(CarbonInterface $date, int $warningDays): bool
+    {
+        return $this->date_precision === 'DAY'
+            && filled($this->eol_date)
+            && ! in_array($this->lifecycle_status, ['STALE', 'CONFLICT'], true)
+            && ! $this->hasEndedSupport($date)
+            && $this->eol_date <= $date->copy()->addDays($warningDays)->toDateString();
     }
 }

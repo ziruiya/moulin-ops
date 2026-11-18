@@ -2,11 +2,11 @@
 
 namespace App\Models;
 
+use App\Services\SettingsService;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
 use Illuminate\Database\Eloquent\Relations\HasOne;
-use Illuminate\Support\Carbon;
 
 class AssetComponent extends Model
 {
@@ -36,7 +36,10 @@ class AssetComponent extends Model
             ? $record : null;
     }
 
-    public function lifecycleLabel(): string
+    /**
+     * @param  array{data_review_days: int, eol_warning_days: int, restore_review_days: int}|null  $rules
+     */
+    public function lifecycleLabel(?array $rules = null): string
     {
         $record = $this->verifiedLifecycle();
         if (! $record) {
@@ -45,10 +48,12 @@ class AssetComponent extends Model
         if ($record->lifecycle_status === 'CONFLICT') {
             return '情報源が不一致';
         }
-        if ($record->lifecycle_status === 'STALE' || $record->verified_at->lt(now()->subDays(LifecycleRecord::REVIEW_DAYS))) {
+        $rules ??= app(SettingsService::class)->rules();
+        if ($record->lifecycle_status === 'STALE' || $record->verified_at->lt(now()->subDays($rules['data_review_days']))) {
             return '要再確認';
         }
-        if ($record->hasEndedSupport(today())) {
+        $today = today();
+        if ($record->hasEndedSupport($today)) {
             return 'サポート終了（EOL）';
         }
         if (blank($record->eol_date)) {
@@ -56,14 +61,14 @@ class AssetComponent extends Model
         }
 
         $phase = match ($record->support_phase) {
-            'Active' => $record->active_support_end && $record->active_support_end < today()->toDateString()
+            'Active' => $record->active_support_end && $record->active_support_end < $today->toDateString()
                 ? 'セキュリティ修正のみ' : '通常サポート',
             'Security Only' => 'セキュリティ修正のみ',
             'Extended' => '延長サポート',
             default => '未確認',
         };
 
-        return $record->date_precision === 'DAY' && Carbon::parse($record->eol_date)->lte(today()->addDays(60))
+        return $record->endsSupportSoon($today, $rules['eol_warning_days'])
             ? $phase.'・終了間近' : $phase;
     }
 }

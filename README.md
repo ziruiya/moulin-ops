@@ -162,6 +162,7 @@ Laravel の HTTP テストで、三つの E2E、回復失敗時のトランザ�
 | `app/Models`、`app/Policies`、`app/Services` | 関連、権限、状態遷移、版比較、監査 |
 | `database/migrations`、`database/seeders` | スキーマと架空のデモデータ |
 | `resources/views` | Blade の日本語画面 |
+| `app/Services/SettingsService.php`、`resources/views/settings/system` | Admin 専用のシステム設定（`/settings/system`） |
 | `tests`、`.github/workflows` | 単体・HTTP テスト、CI |
 | `docs` | [面接官向けガイド](docs/INTERVIEW-GUIDE-ja.md)、データモデル、変更管理、セキュリティ、画面キャプチャ |
 | `examples/php-maintenance` | [PHP 保守の個人練習](docs/php-maintenance-case-study-ja.md)の再現コード |

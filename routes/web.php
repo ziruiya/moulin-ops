@@ -5,6 +5,7 @@ use App\Http\Controllers\AuditEventController;
 use App\Http\Controllers\Auth\AuthController;
 use App\Http\Controllers\DashboardController;
 use App\Http\Controllers\IncidentController;
+use App\Http\Controllers\SystemSettingsController;
 use App\Http\Controllers\UpdatePlanController;
 use App\Http\Controllers\UserManagementController;
 use App\Http\Controllers\VulnerabilityController;
@@ -54,5 +55,9 @@ Route::middleware('auth')->group(function () {
     Route::middleware('can:manage-users')->prefix('settings/users')->name('settings.users.')->group(function () {
         Route::get('/', [UserManagementController::class, 'index'])->name('index');
         Route::put('/{user}/roles', [UserManagementController::class, 'updateRoles'])->name('roles.update');
+    });
+    Route::middleware('can:manage-system-settings')->prefix('settings/system')->name('settings.system.')->group(function () {
+        Route::get('/', [SystemSettingsController::class, 'index'])->name('index');
+        Route::post('/', [SystemSettingsController::class, 'update'])->name('update');
     });
 });

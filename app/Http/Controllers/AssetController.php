@@ -7,6 +7,7 @@ use App\Models\AssetComponent;
 use App\Models\AssetRelationship;
 use App\Models\LifecycleRecord;
 use App\Services\AuditLogger;
+use App\Services\SettingsService;
 use Illuminate\Http\Request;
 use Illuminate\Support\Carbon;
 use Illuminate\Support\Facades\DB;
@@ -15,7 +16,7 @@ use Illuminate\Validation\Rule;
 
 class AssetController extends Controller
 {
-    public function index(Request $r)
+    public function index(Request $r, SettingsService $settings)
     {
         Gate::authorize('viewAny', Asset::class);
         $q = Asset::query()->with('components.currentLifecycle');
@@ -27,7 +28,7 @@ class AssetController extends Controller
             $q->where(fn ($x) => $x->where('asset_code', 'like', '%'.$r->q.'%')->orWhere('name', 'like', '%'.$r->q.'%'));
         }
 
-        return view('assets.index', ['assets' => $q->paginate(20)]);
+        return view('assets.index', ['assets' => $q->paginate(20), 'lifecycleRules' => $settings->rules()]);
     }
 
     public function create()
@@ -47,12 +48,16 @@ class AssetController extends Controller
         return redirect()->route('assets.show', $a)->with('status', '登録しました');
     }
 
-    public function show(Asset $asset)
+    public function show(Asset $asset, SettingsService $settings)
     {
         Gate::authorize('view', $asset);
         $asset->load('components.currentLifecycle', 'components.lifecycleRecords', 'relationships.targetAsset', 'incomingRelationships.sourceAsset');
 
-        return view('assets.show', ['asset' => $asset, 'targetAssets' => Asset::whereKeyNot($asset->id)->orderBy('asset_code')->get()]);
+        return view('assets.show', [
+            'asset' => $asset,
+            'targetAssets' => Asset::whereKeyNot($asset->id)->orderBy('asset_code')->get(),
+            'lifecycleRules' => $settings->rules(),
+        ]);
     }
 
     public function edit(Asset $asset)
