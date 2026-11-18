@@ -104,6 +104,9 @@ class SystemSettingsTest extends TestCase
     public function test_system_page_deduplicates_database_sources_and_renders_only_listed_config(): void
     {
         $this->actingAs($this->user('Admin'));
+        $this->get(route('settings.system.index'))->assertOk()
+            ->assertSeeInOrder(['アプリケーション名', config('app.name')]);
+
         config(['app.name' => 'Settings <demo>', 'mail.mailers.smtp.password' => 'TEST_ONLY_CONFIG_SENTINEL']);
         $component = Asset::create(['asset_code' => 'SETTINGS-SOURCES', 'name' => 'Source inventory', 'asset_type' => 'Server'])
             ->components()->create(['product_name' => 'Runtime', 'version' => '1.0', 'component_type' => 'Runtime']);
