@@ -28,7 +28,6 @@
         <env name="DB_PORT" value="3306"/>
         <env name="DB_DATABASE" value="moulinops"/>
         <env name="DB_USERNAME" value="moulinops"/>
-        <env name="DB_PASSWORD" value="local-dev-only"/>
         <env name="DB_URL" value=""/>
         <env name="MAIL_MAILER" value="array"/>
         <env name="QUEUE_CONNECTION" value="sync"/>

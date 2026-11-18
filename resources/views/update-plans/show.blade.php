@@ -80,27 +80,32 @@
     <h2>チェックリスト</h2>
     @foreach($plan->checklistItems->sortBy([['phase', 'asc'], ['sequence', 'asc']]) as $item)
         <p data-checklist-status="{{ $item->status }}">{{ $item->sequence }}. {{ $item->title }} — {{ $checklistLabels[$item->status] }} @if($item->evidence) / {{ $item->evidence }} @endif</p>
-        @can('update', $plan)
+        @if(!$item->correction_of_id && $item->passedCorrections->isEmpty() && auth()->user()->can('update', $plan))
             <form method="post" action="{{ route('checklist-items.status', $item) }}">
                 @csrf
-                <label>結果 <select name="status">@foreach($checklistLabels as $status => $label)@if($status !== 'Waived')<option value="{{ $status }}" @selected($status === $item->status)>{{ $label }}</option>@endif @endforeach</select></label>
-                <label>証跡 <input name="evidence" value="{{ $item->evidence }}"></label>
-                @if($item->status === 'Failed')<label>是正理由 <input name="correction_reason"></label>@endif
+                @if($item->status === 'Failed')
+                    <input type="hidden" name="status" value="Passed">
+                    <label>是正理由 <input name="correction_reason" required></label>
+                    <label>再検証の証跡 <input name="evidence" required></label>
+                @else
+                    <label>結果 <select name="status">@foreach($checklistLabels as $status => $label)@if($status !== 'Waived')<option value="{{ $status }}" @selected($status === $item->status)>{{ $label }}</option>@endif @endforeach</select></label>
+                    <label>証跡 <input name="evidence" value="{{ $item->evidence }}"></label>
+                @endif
                 <button>更新</button>
             </form>
-        @endcan
-        @can('approve', $plan)
+        @endif
+        @if(!in_array($item->status, ['Failed', 'Passed'], true) && auth()->user()->can('approve', $plan))
             <details>
                 <summary>チェック項目の免除</summary>
                 <form method="post" action="{{ route('checklist-items.status', $item) }}">
                     @csrf
                     <input type="hidden" name="status" value="Waived">
                     <label>免除理由 <input name="exception_reason" required></label>
-                    <label>適用範囲 <select name="waiver_scope"><option value="plan">計画</option><option value="asset">資産</option><option value="environment">環境</option></select></label>
+                    <label>適用範囲 <select name="waiver_scope">@foreach(\App\Models\ChecklistItem::WAIVER_SCOPES as $scope => $label)<option value="{{ $scope }}">{{ $label }}</option>@endforeach</select></label>
                     <button>免除を記録</button>
                 </form>
             </details>
-        @endcan
+        @endif
     @endforeach
     @can('update', $plan)
         <form method="post" action="{{ route('update-plans.checklist', $plan) }}">
@@ -137,7 +142,10 @@
     <dialog id="aiDemo">
         <h2>AI調査テンプレート（DEMO）</h2>
         <b>DEMO — AI連携なし</b>
+        <h3>調査質問の例</h3>
         <p>対象製品とバージョン、公式情報源、影響条件、修正バージョン、互換性上の注意を確認する。推測を明示し、変更操作を実行しない。</p>
+        <h3>出力形式</h3>
+        <p>確認済みの事実、未確認事項、確認に使った資料、次の検証作業を記載します。</p>
         <p>担当者が根拠を手動で確認し、必要内容を転記します。人手確認が必須です。</p>
         <label><input type="checkbox">人が内容を確認しました（デモ確認欄）</label>
         <button type="button" onclick="document.getElementById('aiDemo').close()">閉じる</button>

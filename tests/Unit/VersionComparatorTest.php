@@ -11,6 +11,8 @@ class VersionComparatorTest extends TestCase
     {
         $comparator = new VersionComparator;
         self::assertTrue($comparator->compare('8.10', '>=8.0,<8.11')['affected']);
+        self::assertTrue($comparator->compare('8.10', '>8.9')['affected']);
+        self::assertFalse($comparator->compare('8.10', '>=8.9,<8.10')['affected']);
         self::assertFalse($comparator->compare('8.9', '>=8.10')['affected']);
     }
 

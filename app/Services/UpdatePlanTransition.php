@@ -27,6 +27,7 @@ class UpdatePlanTransition
         'EXECUTING' => 3,
         'VERIFYING' => 4,
         'COMPLETED' => 5,
+        'EMERGENCY_REVIEW' => 5,
     ];
 
     public function __construct(private AuditLogger $audit) {}
@@ -81,7 +82,7 @@ class UpdatePlanTransition
                 $plan->actual_start_at ??= now();
                 $plan->operator_id = $actor?->id ?? $plan->operator_id;
             }
-            if (in_array($to, ['COMPLETED', 'ROLLED_BACK', 'ROLLBACK_FAILED'], true)) {
+            if (in_array($to, ['COMPLETED', 'ROLLED_BACK', 'ROLLBACK_FAILED', 'EMERGENCY_REVIEW'], true)) {
                 $plan->actual_end_at = now();
             }
             if ($to === 'ROLLED_BACK') {
@@ -121,7 +122,7 @@ class UpdatePlanTransition
                 throw ValidationException::withMessages(['execution' => 'バックアップ証跡、復元検証、実施担当者、有効なメンテナンス枠が必要です。']);
             }
             if ((in_array(strtoupper($plan->risk_level ?? ''), ['HIGH', 'CRITICAL'], true)
-                    && ! $actor?->roles()->where('name', 'Operator')->exists())
+                    && ($actor?->id !== $plan->operator_id || ! $actor->roles()->where('name', 'Operator')->exists()))
                 || ($actor && $plan->approvals()->where('decision', 'APPROVED')->where('approver_id', $actor->id)->exists())) {
                 throw ValidationException::withMessages(['execution' => '実施担当者の権限と承認者からの独立性を確認してください。']);
             }
@@ -130,7 +131,7 @@ class UpdatePlanTransition
         if ($lastPhase !== null && $this->hasIncompleteRequiredItems($plan, array_slice(ChecklistItem::PHASES, 0, $lastPhase))) {
             throw ValidationException::withMessages(['checklist' => 'この段階までの必須チェック項目を完了してください。']);
         }
-        if ($to === 'COMPLETED' && ! $this->passedPhase($plan, 5)) {
+        if (in_array($to, ['COMPLETED', 'EMERGENCY_REVIEW'], true) && ! $this->passedPhase($plan, 5, withEvidence: true)) {
             throw ValidationException::withMessages(['checklist' => '更新後の確認記録が必要です。']);
         }
         if ($to === 'ROLLED_BACK') {
@@ -141,8 +142,8 @@ class UpdatePlanTransition
                 throw ValidationException::withMessages(['rollback' => 'ロールバックの理由と復元検証結果が必要です。']);
             }
         }
-        if ($to === 'EMERGENCY_REVIEW' && blank($data['completion_result'] ?? null)) {
-            throw ValidationException::withMessages(['completion_result' => '事後レビューの記録が必要です。']);
+        if ($to === 'EMERGENCY_REVIEW' && ($plan->change_type !== 'Emergency' || blank($data['completion_result'] ?? null))) {
+            throw ValidationException::withMessages(['completion_result' => '緊急変更の事後レビューの記録が必要です。']);
         }
         if ($to === 'ROLLBACK_FAILED' && blank($data['incident']['title'] ?? null)) {
             throw ValidationException::withMessages(['incident' => '障害の詳細を記録してください。']);
@@ -152,9 +153,11 @@ class UpdatePlanTransition
     private function hasIncompleteRequiredItems(UpdatePlan $plan, array $phases): bool
     {
         return $plan->checklistItems()->whereIn('phase', $phases)->where('is_required', true)
+            ->whereDoesntHave('passedCorrections')
             ->where(fn ($query) => $query->whereNotIn('status', ['Passed', 'Waived'])
                 ->orWhere(fn ($waiver) => $waiver->where('status', 'Waived')
-                    ->where(fn ($invalid) => $invalid->whereNull('waiver_scope')->orWhereNull('exception_reason')->orWhereNull('waived_by')->orWhereNull('waived_at'))))
+                    ->where(fn ($invalid) => $invalid->whereNull('waiver_scope')->orWhereNotIn('waiver_scope', array_keys(ChecklistItem::WAIVER_SCOPES))
+                        ->orWhereNull('exception_reason')->orWhere('exception_reason', '')->orWhereNull('waived_by')->orWhereNull('waived_at'))))
             ->exists();
     }
 

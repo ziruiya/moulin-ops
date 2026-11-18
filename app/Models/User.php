@@ -15,6 +15,8 @@ use Illuminate\Notifications\Notifiable;
 #[Hidden(['password', 'remember_token'])]
 class User extends Authenticatable
 {
+    public const CHANGE_APPROVAL_GRANT = 'change_approval';
+
     /** @use HasFactory<UserFactory> */
     use HasFactory, Notifiable;
 
@@ -33,6 +35,6 @@ class User extends Authenticatable
 
     public function roles(): BelongsToMany
     {
-        return $this->belongsToMany(Role::class);
+        return $this->belongsToMany(Role::class)->withPivot('granted_by', 'grant_reason', 'grant_scope');
     }
 }

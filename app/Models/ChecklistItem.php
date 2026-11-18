@@ -4,6 +4,7 @@ namespace App\Models;
 
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class ChecklistItem extends Model
 {
@@ -14,6 +15,8 @@ class ChecklistItem extends Model
         4 => '4 Implementation',
         5 => '5 Post-change Verification',
     ];
+
+    public const WAIVER_SCOPES = ['item' => '項目', 'phase' => '段階', 'plan' => '計画'];
 
     protected $table = 'update_checklist_items';
 
@@ -26,11 +29,17 @@ class ChecklistItem extends Model
         return $this->belongsTo(UpdatePlan::class, 'update_plan_id');
     }
 
+    public function passedCorrections(): HasMany
+    {
+        return $this->hasMany(self::class, 'correction_of_id')->where('status', 'Passed')
+            ->whereNotNull('evidence')->where('evidence', '<>', '');
+    }
+
     protected static function booted(): void
     {
         static::updating(function (self $item): void {
-            if ($item->getOriginal('status') === 'Failed' && $item->isDirty('status') && $item->status === 'Passed') {
-                throw new \DomainException('Failed checklist items require a correction record before passing.');
+            if ($item->getOriginal('status') === 'Failed' || $item->getOriginal('correction_of_id')) {
+                throw new \DomainException('Failed checklist items and their corrections are retained as recorded.');
             }
         });
     }

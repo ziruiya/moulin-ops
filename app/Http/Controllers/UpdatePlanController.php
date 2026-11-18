@@ -36,8 +36,11 @@ class UpdatePlanController extends Controller
     public function store(Request $r, AuditLogger $audit)
     {
         $this->authorize('create', UpdatePlan::class);
-        $data = $r->validate(['title' => 'required|string|max:255', 'description' => 'nullable|string', 'asset_ids' => 'required|array|min:1', 'asset_ids.*' => 'exists:assets,id', 'component_ids' => 'array', 'component_ids.*' => 'exists:asset_components,id', 'impact' => 'required|string|max:255', 'risk_level' => 'nullable|string', 'current_version' => 'nullable|string', 'target_version' => 'nullable|string', 'change_type' => 'nullable|in:Standard,Normal,Emergency', 'reason_type' => 'nullable|in:EOL,Security,CVE,Maintenance,Incident']);
+        $data = $r->validate(['title' => 'required|string|max:255', 'description' => 'nullable|string', 'asset_ids' => 'required|array|min:1', 'asset_ids.*' => Rule::exists('assets', 'id')->withoutTrashed(), 'component_ids' => 'array', 'component_ids.*' => 'exists:asset_components,id', 'impact' => 'required|string|max:255', 'risk_level' => 'nullable|string', 'current_version' => 'nullable|string', 'target_version' => 'nullable|string', 'change_type' => 'nullable|in:Standard,Normal,Emergency', 'reason_type' => 'nullable|in:EOL,Security,CVE,Maintenance,Incident']);
         $plan = DB::transaction(function () use ($data, $r, $audit) {
+            if (($data['change_type'] ?? 'Normal') === 'Normal' && Asset::whereKey($data['asset_ids'])->where('operational_status', 'Retired')->exists()) {
+                throw ValidationException::withMessages(['asset_ids' => '廃止済みの資産は通常の変更計画に追加できません。']);
+            }
             $plan = UpdatePlan::create(['plan_code' => 'CHG-'.strtoupper(bin2hex(random_bytes(4))), 'title' => $data['title'], 'description' => $data['description'] ?? null, 'impact' => $data['impact'], 'risk_level' => $data['risk_level'] ?? null, 'current_version' => $data['current_version'] ?? null, 'target_version' => $data['target_version'] ?? null, 'change_type' => $data['change_type'] ?? null, 'reason_type' => $data['reason_type'] ?? null, 'created_by' => $r->user()->id]);
             $plan->assets()->sync($data['asset_ids']);
             foreach ($data['component_ids'] ?? [] as $id) {
@@ -55,7 +58,7 @@ class UpdatePlanController extends Controller
 
     public function show(UpdatePlan $updatePlan)
     {
-        $updatePlan->load(['assets', 'components', 'checklistItems', 'approvals.approver', 'incidents', 'operator', 'reviewer', 'sourceAssessment.vulnerability']);
+        $updatePlan->load(['assets', 'components', 'checklistItems.passedCorrections', 'approvals.approver', 'incidents', 'operator', 'reviewer', 'sourceAssessment.vulnerability']);
         $operators = Gate::allows('update', $updatePlan)
             ? User::whereHas('roles', fn ($roles) => $roles->where('name', 'Operator'))->orderBy('name')->get()
             : collect();
@@ -67,9 +70,13 @@ class UpdatePlanController extends Controller
     {
         $this->authorize('update', $updatePlan);
         $d = $r->validate(['impact' => 'nullable|string|max:255', 'test_plan' => 'nullable|string', 'implementation_plan' => 'nullable|string', 'verification_plan' => 'nullable|string', 'rollback_plan' => 'nullable|string', 'rollback_trigger' => 'nullable|string', 'backup_reference' => 'nullable|string', 'backup_verified' => 'nullable|boolean', 'restore_test_passed' => 'nullable|boolean', 'planned_start_at' => 'nullable|date', 'planned_end_at' => 'nullable|date', 'operator_id' => 'nullable|exists:users,id', 'current_version' => 'nullable|string', 'target_version' => 'nullable|string', 'risk_reason' => 'nullable|string']);
-        $old = $updatePlan->only(array_keys($d));
-        $updatePlan->fill($d)->save();
-        $audit->log($updatePlan, 'plan_updated', $old, $d);
+        DB::transaction(function () use ($updatePlan, $d, $audit): void {
+            $plan = UpdatePlan::query()->lockForUpdate()->findOrFail($updatePlan->id);
+            $this->authorize('update', $plan);
+            $old = $plan->only(array_keys($d));
+            $plan->update($d);
+            $audit->log($plan, 'plan_updated', $old, $d);
+        });
 
         return back();
     }
@@ -95,45 +102,71 @@ class UpdatePlanController extends Controller
 
     public function checklist(Request $r, UpdatePlan $updatePlan, AuditLogger $audit)
     {
-        abort_unless($r->user()->roles()->whereIn('name', ['Operator', 'Admin'])->exists(), 403);
+        $this->authorize('update', $updatePlan);
         $d = $r->validate(['phase' => ['required', Rule::in(ChecklistItem::PHASES)], 'title' => 'required|string|max:255', 'description' => 'nullable|string', 'expected_result' => 'nullable|string', 'is_required' => 'boolean']);
-        $item = $updatePlan->checklistItems()->create($d + ['status' => 'Pending']);
-        $audit->log($item, 'created');
+        DB::transaction(function () use ($updatePlan, $d, $audit): void {
+            $plan = UpdatePlan::query()->lockForUpdate()->findOrFail($updatePlan->id);
+            $this->authorize('update', $plan);
+            $item = $plan->checklistItems()->create($d + ['status' => 'Pending']);
+            $audit->log($item, 'created');
+        });
 
         return back();
     }
 
     public function checklistStatus(Request $r, ChecklistItem $item, AuditLogger $audit)
     {
-        if ($r->input('status') === 'Waived') {
-            abort_unless($r->user()->roles()->where('name', 'Reviewer')->exists(), 403);
-        } else {
-            abort_unless($r->user()->roles()->whereIn('name', ['Operator', 'Admin'])->exists(), 403);
-        }
-        $d = $r->validate(['status' => 'required|in:Passed,Failed,Blocked,Not Applicable,Waived,Pending', 'evidence' => 'nullable|string', 'exception_reason' => 'required_if:status,Waived|nullable|string', 'waiver_scope' => 'required_if:status,Waived|nullable|in:plan,asset,environment', 'correction_reason' => 'nullable|string']);
-        if ($item->status === 'Failed' && $d['status'] === 'Passed') {
-            $r->validate(['correction_reason' => 'required|string']);
-            $correction = $item->plan->checklistItems()->create([
-                'phase' => $item->phase,
-                'sequence' => $item->sequence + 1,
-                'title' => $item->title.'（項目 #'.$item->id.' の是正）',
-                'description' => $d['correction_reason'],
-                'is_required' => $item->is_required,
-                'status' => 'Passed',
-                'evidence' => $d['evidence'] ?? null,
-                'completed_by' => $r->user()->id,
-                'completed_at' => now(),
+        $ability = $r->input('status') === 'Waived' ? 'approve' : 'update';
+        $this->authorize($ability, $item->plan);
+
+        return DB::transaction(function () use ($r, $item, $audit, $ability) {
+            $plan = UpdatePlan::query()->lockForUpdate()->findOrFail($item->update_plan_id);
+            $this->authorize($ability, $plan);
+            $item->refresh();
+            abort_if($item->correction_of_id, 403);
+            $d = $r->validate([
+                'status' => 'required|in:Passed,Failed,Blocked,Not Applicable,Waived,Pending',
+                'evidence' => 'nullable|string',
+                'exception_reason' => 'required_if:status,Waived|nullable|string',
+                'waiver_scope' => ['required_if:status,Waived', 'nullable', Rule::in(array_keys(ChecklistItem::WAIVER_SCOPES))],
             ]);
-            $audit->log($correction, 'checklist_correction_recorded', ['failed_item_id' => $item->id], ['correction_reason' => $d['correction_reason']]);
 
-            return back()->with('status', '是正記録を追加しました。Failed の元項目は保持されています。');
-        }
-        unset($d['correction_reason']);
-        $old = $item->only(['status', 'evidence', 'exception_reason', 'waiver_scope']);
-        $item->fill($d + ['completed_by' => $r->user()->id, 'completed_at' => now(), 'waived_by' => $d['status'] === 'Waived' ? $r->user()->id : null, 'waived_at' => $d['status'] === 'Waived' ? now() : null])->save();
-        $audit->log($item, 'checklist_status', $old, $item->only(['status', 'evidence', 'exception_reason', 'waiver_scope']));
+            if ($item->status === 'Failed') {
+                if ($d['status'] !== 'Passed') {
+                    throw ValidationException::withMessages(['status' => '不合格の記録は変更できません。是正記録を追加してください。']);
+                }
+                $correctionData = $r->validate(['correction_reason' => 'required|string', 'evidence' => 'required|string']);
+                $correction = $item->passedCorrections()->firstOrCreate(['status' => 'Passed'], [
+                    'update_plan_id' => $plan->id, 'phase' => $item->phase, 'sequence' => $item->sequence + 1,
+                    'title' => mb_substr($item->title, 0, 220).'（項目 #'.$item->id.' の是正）',
+                    'description' => $correctionData['correction_reason'], 'is_required' => $item->is_required,
+                    'evidence' => $correctionData['evidence'], 'completed_by' => $r->user()->id, 'completed_at' => now(),
+                ]);
+                if ($correction->wasRecentlyCreated) {
+                    $audit->log($correction, 'checklist_correction_recorded', ['failed_item_id' => $item->id], ['correction_reason' => $correctionData['correction_reason']]);
+                }
 
-        return back();
+                return back()->with('status', '是正記録を確認できます。元の不合格記録は保持されています。');
+            }
+
+            $fields = ['status', 'evidence', 'exception_reason', 'waiver_scope', 'waived_by', 'waived_at'];
+            $old = $item->only($fields);
+            if ($d['status'] === 'Waived') {
+                abort_if($item->status === 'Passed', 403);
+                $item->update([
+                    'status' => 'Waived', 'exception_reason' => $d['exception_reason'], 'waiver_scope' => $d['waiver_scope'],
+                    'waived_by' => $r->user()->id, 'waived_at' => now(),
+                ]);
+            } else {
+                $item->update([
+                    'status' => $d['status'], 'evidence' => $d['evidence'] ?? null, 'completed_by' => $r->user()->id, 'completed_at' => now(),
+                    'exception_reason' => null, 'waiver_scope' => null, 'waived_by' => null, 'waived_at' => null,
+                ]);
+            }
+            $audit->log($item, 'checklist_status', $old, $item->only($fields));
+
+            return back();
+        });
     }
 
     public function approve(Request $r, UpdatePlan $updatePlan, UpdatePlanTransition $service)

@@ -29,7 +29,7 @@ class UpdatePlanPolicy
 
     public function update(User $user, UpdatePlan $plan): bool
     {
-        return $this->create($user) && ! in_array($plan->status, ['COMPLETED', 'ROLLED_BACK'], true);
+        return $this->create($user) && ! in_array($plan->status, UpdatePlan::FINAL_STATES, true);
     }
 
     public function transition(User $user, UpdatePlan $plan): bool
@@ -39,6 +39,16 @@ class UpdatePlanPolicy
 
     public function approve(User $user, UpdatePlan $plan): bool
     {
-        return $this->has($user, 'Reviewer') && $user->id !== $plan->created_by && $user->id !== $plan->operator_id;
+        if (in_array($plan->status, UpdatePlan::FINAL_STATES, true)
+            || $user->id === $plan->created_by || $user->id === $plan->operator_id) {
+            return false;
+        }
+        $reviewer = $user->roles()->where('name', 'Reviewer');
+        if ($this->has($user, 'Operator')) {
+            $reviewer->wherePivot('grant_scope', User::CHANGE_APPROVAL_GRANT)
+                ->wherePivotNotNull('granted_by')->wherePivot('grant_reason', '<>', '');
+        }
+
+        return $reviewer->exists();
     }
 }

@@ -9,6 +9,8 @@ use Illuminate\Database\Eloquent\Relations\HasMany;
 
 class UpdatePlan extends Model
 {
+    public const FINAL_STATES = ['COMPLETED', 'ROLLED_BACK', 'ROLLBACK_FAILED', 'CANCELLED', 'EMERGENCY_REVIEW'];
+
     public const STATUS_LABELS = [
         'DRAFT' => '下書き',
         'ASSESSMENT' => '影響調査中',
@@ -33,6 +35,15 @@ class UpdatePlan extends Model
     protected $guarded = [];
 
     protected $casts = ['backup_verified' => 'boolean', 'restore_test_passed' => 'boolean', 'planned_start_at' => 'datetime', 'planned_end_at' => 'datetime', 'actual_start_at' => 'datetime', 'actual_end_at' => 'datetime'];
+
+    protected static function booted(): void
+    {
+        static::updating(function (self $plan): void {
+            if (in_array($plan->getOriginal('status'), self::FINAL_STATES, true)) {
+                throw new \DomainException('Concluded update plans are retained as recorded.');
+            }
+        });
+    }
 
     public function assets(): BelongsToMany
     {

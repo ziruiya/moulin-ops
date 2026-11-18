@@ -8,6 +8,7 @@ use App\Models\Role;
 use App\Models\User;
 use App\Models\WorkRecord;
 use Illuminate\Foundation\Testing\RefreshDatabase;
+use Illuminate\Support\Carbon;
 use Tests\TestCase;
 
 class AssetAccessTest extends TestCase
@@ -87,10 +88,11 @@ class AssetAccessTest extends TestCase
 
     public function test_only_admin_can_manage_user_roles(): void
     {
-        foreach (['Operator', 'Reviewer'] as $role) {
+        foreach (['Operator', 'Reviewer', 'Viewer'] as $role) {
             $user = $this->userWith($role);
             $this->actingAs($user)->get('/settings/users')->assertForbidden();
             $this->put('/settings/users/'.$user->id.'/roles', ['roles' => ['Admin']])->assertForbidden();
+            $this->assertFalse($user->roles()->where('name', 'Admin')->exists());
         }
         $admin = $this->userWith('Admin');
         $managed = User::factory()->create();
@@ -111,6 +113,36 @@ class AssetAccessTest extends TestCase
         $this->assertSame('updated', AuditEvent::latest('id')->firstOrFail()->event_type);
         $reviewer = $this->userWith('Reviewer');
         $this->actingAs($reviewer)->put(route('assets.components.update', [$asset, $component]), ['component_type' => 'runtime', 'product_name' => 'Denied', 'support_phase' => 'Unknown'])->assertForbidden();
+    }
+
+    public function test_support_expiry_and_unverified_states_are_distinct_across_components(): void
+    {
+        $this->travelTo(Carbon::parse('2026-12-31 12:00:00'));
+        $this->actingAs($this->userWith('Operator'));
+        $asset = Asset::create(['asset_code' => 'ASSET-LIFECYCLE', 'name' => 'Lifecycle inventory', 'asset_type' => 'Server']);
+        $url = route('assets.show', $asset);
+        $source = ['source_name' => 'PHP Official', 'source_url' => 'https://www.php.net/supported-versions.php', 'date_precision' => 'DAY'];
+        foreach ([
+            ['PHP', '8.2.30', 'Security Only', '2026-12-30', '2026-12-31'],
+            ['Unknown runtime', '1.0', 'Unknown', '2026-12-30', null],
+            ['Old snapshot', '2.0', 'Active', '2026-08-01', '2028-12-31'],
+        ] as [$name, $version, $phase, $verifiedAt, $eol]) {
+            $this->from($url)->post(route('assets.components.store', $asset), [
+                'component_type' => 'Runtime', 'product_name' => $name, 'version' => $version, 'support_phase' => $phase,
+            ])->assertRedirect($url)->assertSessionHasNoErrors();
+            $component = $asset->components()->where('product_name', $name)->sole();
+            $this->from($url)->post(route('assets.lifecycle.store', $asset), [
+                'component_id' => $component->id, 'verified_at' => $verifiedAt, 'support_phase' => $phase, 'eol_date' => $eol,
+            ] + $source)->assertRedirect($url)->assertSessionHasNoErrors();
+        }
+        $this->assertSame(['8.2.30', '1.0', '2.0'], $asset->components()->orderBy('id')->pluck('version')->all());
+        $this->assertArrayNotHasKey('version', $asset->fresh()->getAttributes());
+        $this->actingAs($this->userWith('Viewer'))->get($url)->assertOk()
+            ->assertSeeInOrder(['PHP 8.2.30', 'ライフサイクル セキュリティ修正のみ・終了間近', 'Unknown runtime 1.0', 'ライフサイクル 終了日不明', 'Old snapshot 2.0', 'ライフサイクル 要再確認'])
+            ->assertDontSee('ライフサイクル 通常サポート')
+            ->assertSee('href="https://www.php.net/supported-versions.php"', false);
+        $this->travel(1)->day();
+        $this->get($url)->assertOk()->assertSee('ライフサイクル サポート終了（EOL）');
     }
 
     public function test_relationship_targets_display_codes_and_names_in_list_and_picker(): void

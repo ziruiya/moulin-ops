@@ -80,6 +80,7 @@ class UpdatePlanWorkflowTest extends TestCase
         ])->assertUnprocessable();
 
         $this->assertDatabaseCount('update_plans', 0);
+        $this->assertDatabaseCount('update_plan_assets', 0);
         $this->assertDatabaseCount('update_plan_components', 0);
     }
 
@@ -220,24 +221,87 @@ class UpdatePlanWorkflowTest extends TestCase
         $this->actingAs($user);
         $service = app(UpdatePlanTransition::class);
         $service->transition($plan, 'EXECUTING');
-        $plan->fresh()->checklistItems()->create(['phase' => '5 Post-change Verification', 'title' => 'Verify', 'status' => 'Passed']);
+        $verification = $plan->fresh()->checklistItems()->create(['phase' => '5 Post-change Verification', 'title' => 'Verify', 'status' => 'Passed']);
         $service->transition($plan->fresh(), 'VERIFYING');
+        $this->postJson(route('update-plans.transition', $plan), ['status' => 'COMPLETED'])->assertUnprocessable()->assertJsonValidationErrors('checklist');
+        $verification->update(['evidence' => 'Web and DB smoke tests passed.']);
         $done = $service->transition($plan->fresh(), 'COMPLETED');
         $this->assertNotNull($done->actual_start_at);
         $this->assertNotNull($done->actual_end_at);
         $this->assertTrue($done->planned_start_at->equalTo($start));
         $this->assertTrue($done->planned_end_at->equalTo($end));
+        $this->putJson(route('update-plans.update', $done), ['impact' => 'Rewrite history'])->assertForbidden();
+        $this->expectException(\DomainException::class);
+        $done->update(['status' => 'DRAFT']);
     }
 
     public function test_failed_checklist_correction_adds_passed_row_and_preserves_failure(): void
     {
         $user = $this->operator();
         $plan = $this->plan($user);
+        $plan->update(['status' => 'TESTING', 'test_plan' => 'Application smoke test']);
         $item = ChecklistItem::create(['update_plan_id' => $plan->id, 'phase' => '2 Pre-change Validation', 'title' => 'Test', 'status' => 'Failed']);
-        $this->actingAs($user)->post(route('checklist-items.status', $item), ['status' => 'Passed', 'evidence' => 'Rerun succeeded', 'correction_reason' => 'Fixed configuration'])->assertRedirect();
+        $before = $item->fresh()->getRawOriginal();
+        $status = route('checklist-items.status', $item);
+        $transition = route('update-plans.transition', $plan);
+        $this->actingAs($user)->postJson($status, ['status' => 'Pending'])->assertUnprocessable()->assertJsonValidationErrors('status');
+        $this->postJson($transition, ['status' => 'PENDING_APPROVAL'])->assertUnprocessable()->assertJsonValidationErrors('checklist');
+        $this->postJson($status, ['status' => 'Passed', 'correction_reason' => 'Fixed configuration'])->assertUnprocessable()->assertJsonValidationErrors('evidence');
+        $body = ['status' => 'Passed', 'evidence' => 'Rerun succeeded', 'correction_reason' => 'Fixed configuration'];
+        $this->post($status, $body)->assertRedirect()->assertSessionHasNoErrors();
+        $this->post($status, $body)->assertRedirect()->assertSessionHasNoErrors();
         $this->assertDatabaseHas('update_checklist_items', ['id' => $item->id, 'status' => 'Failed']);
-        $this->assertDatabaseHas('update_checklist_items', ['update_plan_id' => $plan->id, 'status' => 'Passed', 'evidence' => 'Rerun succeeded']);
+        $this->assertDatabaseHas('update_checklist_items', ['update_plan_id' => $plan->id, 'status' => 'Passed', 'evidence' => 'Rerun succeeded', 'correction_of_id' => $item->id]);
         $this->assertSame(2, $plan->checklistItems()->count());
+        $this->assertSame($before, $item->fresh()->getRawOriginal());
+        $this->post($transition, ['status' => 'PENDING_APPROVAL'])->assertRedirect()->assertSessionHasNoErrors();
+        $this->assertSame('PENDING_APPROVAL', $plan->fresh()->status);
+    }
+
+    public function test_plan_requires_impact_and_accepts_only_the_five_checklist_phases(): void
+    {
+        $user = $this->operator();
+        $asset = Asset::create(['asset_code' => 'FIVE-PHASES', 'name' => 'Demo', 'asset_type' => 'Server']);
+        $this->actingAs($user)->postJson(route('update-plans.store'), [
+            'title' => 'Missing impact', 'asset_ids' => [$asset->id], 'impact' => ' ',
+        ])->assertUnprocessable()->assertJsonValidationErrors('impact');
+        $asset->update(['operational_status' => 'Retired']);
+        $this->postJson(route('update-plans.store'), [
+            'title' => 'Retired asset', 'asset_ids' => [$asset->id], 'impact' => 'Scope', 'change_type' => 'Normal',
+        ])->assertUnprocessable()->assertJsonValidationErrors('asset_ids');
+        $this->assertDatabaseCount('update_plans', 0);
+
+        $plan = $this->plan($user);
+        $url = route('update-plans.checklist', $plan);
+        $phases = ['1 Impact Assessment', '2 Pre-change Validation', '3 Backup and Rollback Preparation', '4 Implementation', '5 Post-change Verification'];
+        foreach ($phases as $phase) {
+            $this->post($url, ['phase' => $phase, 'title' => 'Evidence for '.$phase, 'is_required' => true])
+                ->assertRedirect()->assertSessionHasNoErrors();
+        }
+        $this->postJson($url, ['phase' => '6 Unknown phase', 'title' => 'Invalid'])->assertUnprocessable()->assertJsonValidationErrors('phase');
+        $this->assertSame($phases, $plan->checklistItems()->orderBy('phase')->pluck('phase')->all());
+        $this->get(route('update-plans.show', $plan))->assertOk()->assertSeeInOrder(array_map(fn ($phase) => 'Evidence for '.$phase, $phases));
+    }
+
+    public function test_only_emergency_changes_with_review_evidence_can_use_the_emergency_branch(): void
+    {
+        $operator = $this->operator();
+        $plan = $this->plan($operator);
+        $plan->update(['change_type' => 'Normal', 'status' => 'VERIFYING', 'actual_start_at' => now()->subHour()]);
+        $plan->checklistItems()->create([
+            'phase' => ChecklistItem::PHASES[5], 'title' => 'Ordinary verification', 'status' => 'Passed', 'evidence' => 'Service checks passed',
+        ]);
+        $url = route('update-plans.transition', $plan);
+        $this->actingAs($operator)->postJson($url, [
+            'status' => 'EMERGENCY_REVIEW', 'completion_result' => 'Reviewed the emergency authorization',
+        ])->assertUnprocessable()->assertJsonValidationErrors('completion_result');
+        $plan->update(['change_type' => 'Emergency']);
+        $this->postJson($url, ['status' => 'EMERGENCY_REVIEW'])->assertUnprocessable()->assertJsonValidationErrors('completion_result');
+        $this->post($url, ['status' => 'EMERGENCY_REVIEW', 'completion_result' => 'Reviewed the emergency authorization'])
+            ->assertRedirect()->assertSessionHasNoErrors();
+        $this->assertSame('EMERGENCY_REVIEW', $plan->fresh()->status);
+        $this->assertSame('Reviewed the emergency authorization', $plan->fresh()->completion_result);
+        $this->assertTrue($plan->fresh()->actual_end_at->gt($plan->fresh()->actual_start_at));
     }
 
     public function test_approval_resubmission_appends_new_decision_and_preserves_rejection(): void
@@ -272,7 +336,8 @@ class UpdatePlanWorkflowTest extends TestCase
             try {
                 DB::table('change_approvals')->insert(['update_plan_id' => $plan->id, ...$ids, 'approver_id' => $initiator->id, 'decision' => 'APPROVED', 'decided_at' => now(), 'created_at' => now(), 'updated_at' => now()]);
                 $this->fail('The database CHECK must reject initiator/executor self approval.');
-            } catch (QueryException) {
+            } catch (QueryException $exception) {
+                $this->assertStringContainsString('chk_change_approvals_independent', $exception->getMessage());
                 $this->assertDatabaseCount('change_approvals', 0);
             }
         }
@@ -289,5 +354,6 @@ class UpdatePlanWorkflowTest extends TestCase
         }
         $this->get('/update-plans?view=status')->assertSee('DRAFT');
         $this->get('/update-plans?view=time')->assertSee('2026-11-21');
+        $this->get(route('update-plans.show', $plan))->assertSeeInOrder(['AI調査テンプレート（DEMO）', '調査質問の例', '出力形式', '人が内容を確認しました']);
     }
 }

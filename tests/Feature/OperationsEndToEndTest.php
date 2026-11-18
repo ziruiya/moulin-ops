@@ -15,6 +15,7 @@ use App\Models\VulnerabilityRecord;
 use App\Models\WorkRecord;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Carbon;
+use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
 
 class OperationsEndToEndTest extends TestCase
@@ -150,40 +151,7 @@ class OperationsEndToEndTest extends TestCase
 
     public function test_e2e_03_http_approval_failure_and_verified_rollback_preserve_linked_evidence(): void
     {
-        $this->travelTo(Carbon::parse('2026-11-18 13:00:00'));
-        $operator = $this->actor('Operator');
-        $reviewer = $this->actor('Reviewer');
-        $this->actingAs($operator);
-        [$asset, $component] = $this->registerPhp('E2E03-WEB', '8.2.30');
-        $plan = $this->createPlan($asset, $component, 'E2E-03 更新と復元', 'Maintenance');
-        $this->put(route('update-plans.update', $plan), [
-            'test_plan' => 'Web、アプリ、DB と業務フローを検証',
-            'implementation_plan' => 'メンテナンス枠で模擬作業',
-            'rollback_plan' => '原版と設定を復元',
-            'rollback_trigger' => 'アプリケーションの起動不可',
-            'backup_reference' => 'DEMO-E2E03-BACKUP',
-            'backup_verified' => 1,
-            'restore_test_passed' => 1,
-            'operator_id' => $operator->id,
-            'planned_start_at' => '2026-11-18 13:00:00',
-            'planned_end_at' => '2026-11-18 14:00:00',
-        ])->assertRedirect()->assertSessionHasNoErrors();
-        $this->transition($plan, 'ASSESSMENT');
-        $this->transition($plan, 'TESTING');
-        $this->pass($this->checklist($plan, 2, '事前テスト'), '事前検証に合格');
-        $this->transition($plan, 'PENDING_APPROVAL');
-        $this->actingAs($reviewer)->post(route('update-plans.approve', $plan), [
-            'decision' => 'APPROVED', 'comments' => '模擬変更を承認', 'approver_id' => $operator->id,
-        ])->assertRedirect()->assertSessionHasNoErrors();
-        $this->assertDatabaseHas('change_approvals', [
-            'update_plan_id' => $plan->id, 'approver_id' => $reviewer->id, 'initiated_by' => $operator->id, 'executed_by' => $operator->id,
-        ]);
-
-        $this->actingAs($operator);
-        $this->transition($plan, 'APPROVED');
-        $this->transition($plan, 'SCHEDULED');
-        $this->transition($plan, 'EXECUTING', ['action_summary' => '検証用の更新を手動で模擬']);
-        $this->transition($plan, 'FAILED', ['details' => '更新後のアプリケーションが起動しない']);
+        [$plan, $asset, $component] = $this->failedChange();
         $url = route('update-plans.transition', $plan);
         $this->postJson($url, ['status' => 'COMPLETED'])->assertUnprocessable();
         $this->transition($plan, 'ROLLBACK_REQUIRED', [
@@ -226,6 +194,94 @@ class OperationsEndToEndTest extends TestCase
         ], $this->planStates($plan));
         $this->get(route('incidents.show', $incident))->assertOk()->assertSee($plan->plan_code)->assertSee('8.2.30');
         $this->get(route('work-records.show', $work))->assertOk()->assertSee($incident->incident_code)->assertSee('8.2.30');
+    }
+
+    public function test_e2e_03_01_failed_rollback_and_new_incident_are_atomic_over_http(): void
+    {
+        [$plan, $asset, $component] = $this->failedChange();
+        $this->transition($plan, 'ROLLBACK_REQUIRED');
+        $this->transition($plan, 'ROLLING_BACK');
+        $before = $plan->fresh()->getRawOriginal();
+        $auditBefore = AuditEvent::count();
+        $workBefore = WorkRecord::count();
+        $request = ['status' => 'ROLLBACK_FAILED', 'incident' => [
+            'title' => '模擬復元に失敗', 'description' => '復元後の確認で起動できなかった',
+        ]];
+
+        $failNextIncident = true;
+        DB::connection()->beforeExecuting(function (string $query) use (&$failNextIncident): void {
+            if ($failNextIncident && preg_match('/^\s*insert into .incidents./i', $query)) {
+                $failNextIncident = false;
+                throw new \RuntimeException('Simulated incident creation failure.');
+            }
+        });
+        $this->postJson(route('update-plans.transition', $plan), $request)->assertInternalServerError();
+        $this->assertFalse($failNextIncident);
+        $this->assertSame($before, $plan->fresh()->getRawOriginal());
+        foreach (['incidents', 'incident_assets', 'incident_components', 'incident_update_plans'] as $table) {
+            $this->assertDatabaseCount($table, 0);
+        }
+        $this->assertDatabaseCount('audit_events', $auditBefore);
+        $this->assertDatabaseCount('work_records', $workBefore);
+
+        $this->travel(30)->minutes();
+        $this->transition($plan, 'ROLLBACK_FAILED', $request);
+        $incident = $plan->incidents()->sole();
+        $this->assertSame('NEW', $incident->status);
+        $this->assertSame($request['incident']['title'], $incident->title);
+        $this->assertSame($asset->id, $incident->assets()->sole()->id);
+        $this->assertSame($component->id, $incident->components()->sole()->id);
+        $this->assertSame('8.2.30', $component->fresh()->version);
+        $this->assertTrue($plan->fresh()->actual_end_at->gt($plan->fresh()->actual_start_at));
+        $this->assertDatabaseHas('work_records', [
+            'update_plan_id' => $plan->id, 'incident_id' => $incident->id, 'summary' => 'Update plan ROLLBACK_FAILED', 'result' => 'Failed',
+        ]);
+        $this->assertDatabaseHas('audit_events', [
+            'auditable_type' => Incident::class, 'auditable_id' => $incident->id, 'event_type' => 'incident_created',
+        ]);
+        $this->assertSame('ROLLBACK_FAILED', last($this->planStates($plan)));
+        $this->postJson(route('update-plans.transition', $plan), ['status' => 'COMPLETED'])->assertUnprocessable();
+        $this->assertSame('ROLLBACK_FAILED', $plan->fresh()->status);
+    }
+
+    private function failedChange(): array
+    {
+        $this->travelTo(Carbon::parse('2026-11-18 13:00:00'));
+        $operator = $this->actor('Operator');
+        $reviewer = $this->actor('Reviewer');
+        $this->actingAs($operator);
+        [$asset, $component] = $this->registerPhp('E2E03-WEB', '8.2.30');
+        $plan = $this->createPlan($asset, $component, 'E2E-03 更新と復元', 'Maintenance');
+        $this->put(route('update-plans.update', $plan), [
+            'test_plan' => 'Web、アプリ、DB と業務フローを検証',
+            'implementation_plan' => 'メンテナンス枠で模擬作業',
+            'rollback_plan' => '原版と設定を復元',
+            'rollback_trigger' => 'アプリケーションの起動不可',
+            'backup_reference' => 'DEMO-E2E03-BACKUP',
+            'backup_verified' => 1,
+            'restore_test_passed' => 1,
+            'operator_id' => $operator->id,
+            'planned_start_at' => '2026-11-18 13:00:00',
+            'planned_end_at' => '2026-11-18 14:00:00',
+        ])->assertRedirect()->assertSessionHasNoErrors();
+        $this->transition($plan, 'ASSESSMENT');
+        $this->transition($plan, 'TESTING');
+        $this->pass($this->checklist($plan, 2, '事前テスト'), '事前検証に合格');
+        $this->transition($plan, 'PENDING_APPROVAL');
+        $this->actingAs($reviewer)->post(route('update-plans.approve', $plan), [
+            'decision' => 'APPROVED', 'comments' => '模擬変更を承認', 'approver_id' => $operator->id,
+        ])->assertRedirect()->assertSessionHasNoErrors();
+        $this->assertDatabaseHas('change_approvals', [
+            'update_plan_id' => $plan->id, 'approver_id' => $reviewer->id, 'initiated_by' => $operator->id, 'executed_by' => $operator->id,
+        ]);
+
+        $this->actingAs($operator);
+        $this->transition($plan, 'APPROVED');
+        $this->transition($plan, 'SCHEDULED');
+        $this->transition($plan, 'EXECUTING', ['action_summary' => '検証用の更新を手動で模擬']);
+        $this->transition($plan, 'FAILED', ['details' => '更新後のアプリケーションが起動しない']);
+
+        return [$plan, $asset, $component];
     }
 
     private function actor(string $role): User
